@@ -78,6 +78,7 @@ class Station:
         self.current = None                  # entry being pumped
         self.current_t0 = 0.0
         self.np_done = set()                 # videoIds already announced
+        self._retries = {}                   # videoId -> failed push count
         self.tg = None                       # wired in run()
         import stateio as S
         self.S = S
@@ -440,14 +441,14 @@ class Station:
             if self.skip_ev.is_set():
                 p.terminate()
                 break
-            # stall watchdog: if the muxer hasn't advanced in 120s the
-            # downstream RTMP connection is a half-open corpse — cut it
+            # stall watchdog: if the muxer hasn't advanced in 60s the
+            # downstream RTMP connection is not consuming — cut it
             ot = self._read_out_time(prog)
             if ot > last_out_time:
                 last_out_time = ot
                 last_advance = time.time()
-            elif time.time() - last_advance > 120:
-                self.log(f"remux stalled {ot:.0f}s — killing (watchdog)")
+            elif time.time() - last_advance > 60:
+                self.log(f"remux stalled (muxed {ot:.0f}s) — watchdog cut")
                 p.terminate()
                 break
             time.sleep(0.5)
@@ -468,11 +469,25 @@ class Station:
         return max(0.0, min(played, seconds + 2.0))
 
     def _read_out_time(self, prog: str) -> float:
+        """Last muxed output time in seconds (ffmpeg 6/7 progress keys)."""
         try:
+            us = ms = None
             with open(prog) as f:
                 for line in f:
                     if line.startswith("out_time_us="):
-                        return float(line.split("=")[1]) / 1e6
+                        try:
+                            us = float(line.split("=")[1]) / 1e6
+                        except ValueError:
+                            pass
+                    elif line.startswith("out_time_ms="):
+                        try:
+                            ms = float(line.split("=")[1]) / 1e6
+                        except ValueError:
+                            pass
+            if us is not None:
+                return us
+            if ms is not None:
+                return ms
         except Exception:
             pass
         return -1.0
@@ -532,6 +547,8 @@ class Station:
 
     def _pump_forever(self, streamer):
         off = 0.0
+        stall_streak = 0
+        warned = False
         self._render_slate()
         while self.alive and streamer.poll() is None \
                 and time.time() < self.deadline:
@@ -554,14 +571,72 @@ class Station:
                 self.current = {"title": "Choosing the next song…",
                                 "artist": "Hindi Hits Radio", "videoId": "—"}
                 self.current_t0 = time.time()
-                off += self._pump_once(SLATE_TS, off, SLATE_SEC)
+                played = self._pump_once(SLATE_TS, off, SLATE_SEC)
+                off += played
+                if played < 5.0:
+                    stall_streak += 1
+                else:
+                    stall_streak = 0
+                    warned = False
+                if stall_streak >= 2:
+                    if not warned:
+                        warned = True
+                        self.log("⚠ RTMP endpoint is NOT consuming data — "
+                                 "the live session for this key is probably "
+                                 "not active. Will retry every ~30s and go "
+                                 "live automatically once it accepts data.")
+                    try:
+                        streamer.terminate()   # force a clean reconnect
+                    except Exception:
+                        pass
+                    time.sleep(30)
                 continue
             self.current = entry
             self.current_t0 = time.time()
             self._notify_np(entry)
             dur = entry.get("dur") or ffprobe_dur(entry["ts"]) or 200.0
             self.log(f"ON AIR: {entry.get('title')} ({dur:.0f}s)")
-            off += self._pump_once(entry["ts"], off, dur)
+            played = self._pump_once(entry["ts"], off, dur)
+            off += played
+            if played < 5.0:
+                # nothing actually reached the stream — keep the song,
+                # reconnect, and try again (endpoint dead / bad push)
+                stall_streak += 1
+                vid = entry.get("videoId")
+                n = self._retries.get(vid, 0) + 1
+                self._retries[vid] = n
+                if n >= 3:
+                    self.log(f"giving up on {entry.get('title')} after "
+                             f"{n} failed pushes")
+                    with self.qlock:
+                        try:
+                            self.state["queue"].remove(entry)
+                        except ValueError:
+                            pass
+                    try:
+                        os.remove(entry["ts"])
+                    except OSError:
+                        pass
+                    self._retries.pop(vid, None)
+                    stall_streak = 0
+                if stall_streak >= 2:
+                    if not warned:
+                        warned = True
+                        self.log("⚠ RTMP endpoint is NOT consuming data — "
+                                 "the live session for this key is probably "
+                                 "not active. Music resumes automatically "
+                                 "once it accepts data.")
+                    try:
+                        streamer.terminate()
+                    except Exception:
+                        pass
+                    time.sleep(30)
+                self.current = None
+                continue
+            # healthy play
+            stall_streak = 0
+            warned = False
+            self._retries.pop(entry.get("videoId"), None)
             self.current = None
             # consume the entry (queue + files) unless it must be kept
             with self.qlock:
