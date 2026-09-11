@@ -205,7 +205,10 @@ class Station:
                         recent = {e.get("videoId", "") for e in queue}
                         recent |= {h.get("videoId", "") for h in
                                    self.state["history"][-30:]}
-                        rec_names = {e.get("title", "").lower() for e in queue}
+                        rec_names = {e.get("title", "").lower()
+                                     for e in queue}
+                        rec_names |= {h.get("title", "").lower() for h in
+                                      self.state["history"][-30:]}
                         p = self.pool.pick(__import__("random"), rec_names)
                         queue.append({"videoId": None, "q": p["q"],
                                       "tkw": p["tkw"], "akw": p["akw"],
@@ -459,13 +462,14 @@ class Station:
             except Exception:
                 p.kill()
         played = time.time() - t0
-        try:
-            with open(prog) as f:
-                for line in f:
-                    if line.startswith("out_time_us="):
-                        played = max(played, float(line.split("=")[1]) / 1e6)
-        except Exception:
-            pass
+        ot = self._read_out_time(prog)
+        if p.returncode == 0:
+            # natural end — wallclock is a fine approximation
+            played = max(played, ot if ot > 0 else 0)
+        else:
+            # killed (skip / watchdog) — trust the muxer's counter only;
+            # an unreadable counter means nothing reached the stream
+            played = ot if ot > 0 else 0.0
         return max(0.0, min(played, seconds + 2.0))
 
     def _read_out_time(self, prog: str) -> float:
