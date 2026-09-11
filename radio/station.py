@@ -86,6 +86,11 @@ class Station:
         else:
             self.rtmp = args.rtmp + "/" + args.key
         st = S.load()
+        # restored entries carry absolute paths from the PREVIOUS runner —
+        # drop them; the downloader re-finds files in the restored cache
+        for e in st.get("queue", []):
+            for k in ("file", "ts", "rfail"):
+                e.pop(k, None)
         self.state = st
         log(f"state loaded: {len(st.get('queue', []))} queued, "
             f"{len(st.get('history', []))} in history")
@@ -306,8 +311,14 @@ class Station:
         return default if os.path.exists(default) else ""
 
     def _render_slate(self):
-        if os.path.exists(SLATE_TS) and os.path.getsize(SLATE_TS) > 10000:
-            return
+        if not hasattr(self, "_slate_lock"):
+            self._slate_lock = threading.Lock()
+        with self._slate_lock:
+            if os.path.exists(SLATE_TS) and os.path.getsize(SLATE_TS) > 10000:
+                return
+            self._render_slate_inner()
+
+    def _render_slate_inner(self):
         from radio import visuals as V
         graph = V.build_slate_graph(WORK)
         cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -423,11 +434,23 @@ class Station:
         p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                              stderr=remux_err, stdin=subprocess.DEVNULL)
         remux_err.close()
+        last_out_time = -1.0
+        last_advance = time.time()
         while p.poll() is None and self.alive:
             if self.skip_ev.is_set():
                 p.terminate()
                 break
-            time.sleep(0.4)
+            # stall watchdog: if the muxer hasn't advanced in 120s the
+            # downstream RTMP connection is a half-open corpse — cut it
+            ot = self._read_out_time(prog)
+            if ot > last_out_time:
+                last_out_time = ot
+                last_advance = time.time()
+            elif time.time() - last_advance > 120:
+                self.log(f"remux stalled {ot:.0f}s — killing (watchdog)")
+                p.terminate()
+                break
+            time.sleep(0.5)
         if p.poll() is None:
             p.terminate()
             try:
@@ -443,6 +466,16 @@ class Station:
         except Exception:
             pass
         return max(0.0, min(played, seconds + 2.0))
+
+    def _read_out_time(self, prog: str) -> float:
+        try:
+            with open(prog) as f:
+                for line in f:
+                    if line.startswith("out_time_us="):
+                        return float(line.split("=")[1]) / 1e6
+        except Exception:
+            pass
+        return -1.0
 
     def pipeline_loop(self):
         from radio import visuals as V
@@ -462,7 +495,8 @@ class Station:
             streamer_log = os.path.join(WORK, "streamer.log")
             s_err = open(streamer_log, "ab")
             streamer = subprocess.Popen(
-                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-re",
+                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+                 "-re", "-rw_timeout", "20000000",
                  "-fflags", "+genpts", "-i", FIFO,
                  "-c:v", "copy", "-c:a", "copy", "-bsf:a", "aac_adtstoasc",
                  "-f", "flv", "-flvflags", "no_duration_filesize",
@@ -476,12 +510,25 @@ class Station:
                 self.log(f"pump error: {ex}")
             try:
                 streamer.terminate()
+                streamer.wait(5)
             except Exception:
                 pass
+            self._tail_log(os.path.join(WORK, "streamer.log"),
+                           "streamer.log tail")
             if not self.alive or time.time() >= self.deadline:
                 break
             self.log("streamer died — restarting in 5s")
             time.sleep(5)
+
+    def _tail_log(self, path: str, label: str, lines: int = 6):
+        try:
+            with open(path, "rb") as f:
+                tail = f.read()[-3000:].decode(errors="replace")
+            for ln in tail.strip().splitlines()[-lines:]:
+                if ln.strip():
+                    self.log(f"{label}: {ln[:220]}")
+        except Exception:
+            pass
 
     def _pump_forever(self, streamer):
         off = 0.0
