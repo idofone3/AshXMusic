@@ -1,0 +1,126 @@
+name: 24/7 Radio
+
+on:
+  workflow_dispatch:
+    inputs:
+      rtmp_url:
+        description: "RTMP(S) push URL (without key)"
+        required: false
+        default: "rtmps://dc5-1.rtmp.t.me/s/"
+      rtmp_key:
+        description: "Stream key (e.g. 3131932193:xxxx)"
+        required: false
+        default: ""
+      song:
+        description: "First song to play (search text)"
+        required: false
+        default: ""
+      hours:
+        description: "Hours to stream this run (max 5.7)"
+        required: false
+        default: "5.5"
+      chain:
+        description: "Auto-start the next run when this ends (24/7)"
+        required: false
+        default: "true"
+      stop:
+        description: "STOP the 24/7 chain (writes STOP, no stream)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: radio-stream
+  cancel-in-progress: false
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore queue state (radio-state branch)
+        run: |
+          git fetch --no-tags --prune --depth=1 origin radio-state || echo "no state branch yet"
+          git checkout radio-state -- radio/state 2>/dev/null || echo "fresh state"
+
+      - name: Restore song cache
+        uses: actions/cache@v4
+        with:
+          path: radio/cache
+          key: radio-songs-v3
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system + python deps
+        run: |
+          ffmpeg -version | head -1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb fonts-noto-core \
+            libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+            libxrandr2 libgbm1 libasound2 libpangocairo-1.0-0 libgtk-3-0 || true
+          python -m pip install --upgrade pip -q
+          pip install -r requirements.txt -q
+
+      - name: Install Chrome for Testing
+        run: python scripts/install_cft_chrome.py
+
+      - name: Write cookies from secret
+        env:
+          COOKIES_B64: ${{ secrets.COOKIES_B64 }}
+        run: |
+          mkdir -p data
+          echo "$COOKIES_B64" | base64 -d > data/cookies.txt
+          wc -l data/cookies.txt
+
+      - name: Persist RTMP creds as secrets (for 24/7 chain)
+        if: github.event_name == 'workflow_dispatch' && inputs.rtmp_key != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh secret set RTMP_URL --body "${{ inputs.rtmp_url }}" || true
+          gh secret set RTMP_KEY --body "${{ inputs.rtmp_key }}" || true
+
+      - name: STOP chain (requested)
+        if: github.event_name == 'workflow_dispatch' && inputs.stop == 'true'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python -c "import sys; sys.path.insert(0,'radio'); import stateio; stateio.set_stop(); print('pushed:', stateio.push_state_branch('.'))"
+          echo "::notice::Radio chain stopped. Run again with stop=false to resume."
+
+      - name: Stream 24/7 radio
+        if: inputs.stop != 'true'
+        env:
+          RTMP_URL: ${{ inputs.rtmp_url || secrets.RTMP_URL }}
+          RTMP_KEY: ${{ inputs.rtmp_key || secrets.RTMP_KEY }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          export PATH=$HOME/.local/bin:$PATH
+          python radio/station.py \
+            --hours "${{ inputs.hours || '5.5' }}" \
+            --song "${{ inputs.song }}" \
+            --rtmp "$RTMP_URL" --key "$RTMP_KEY" \
+            ${{ inputs.stop != 'true' && '--clear-stop' || '' }}
+
+      - name: Chain the next run (24/7 loop)
+        if: >-
+          !cancelled() &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.stop != 'true' &&
+          inputs.chain == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -f radio/state/STOP ]; then
+            echo "STOP marker present — chain ends here."
+            exit 0
+          fi
+          sleep 120
+          gh workflow run radio --ref main -f chain=true -f hours=5.5
+          echo "next run queued"
