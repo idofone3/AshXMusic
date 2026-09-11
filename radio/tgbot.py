@@ -145,6 +145,15 @@ class TgBot(threading.Thread):
     def run(self):
         if not (self.token and self.control):
             return
+        # drop everything sent before this run (stale group chatter must
+        # not storm the queue as song requests)
+        try:
+            data = _call(self.token, "getUpdates", offset=-1, timeout=0)
+            ups = data.get("result") or []
+            if ups:
+                self._offset = ups[-1]["update_id"] + 1
+        except Exception:
+            pass
         while not self._stop:
             data = _call(self.token, "getUpdates", offset=self._offset,
                          timeout=50, allowed_updates=["message"])

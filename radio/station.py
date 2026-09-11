@@ -106,30 +106,32 @@ class Station:
     def log(self, m):
         log(m)
 
-    def _filter_hits(self, hits, tkw="", akw=""):
+    def _filter_hits(self, hits, tkw="", akw="", strict=False):
         bad = self.pool.BADWORDS
-        out = []
+        clean = []
         for t in hits:
             title = (t.get("title") or "").lower()
             artist = (t.get("artist") or "").lower()
             if any(w in title or w in artist for w in bad):
                 continue
-            if tkw and tkw not in title:
-                continue
-            if akw and akw not in artist:
-                continue
-            out.append(t)
-        return out or [t for t in hits
-                       if not any(w in (t.get("title") or "").lower()
-                                  for w in bad)]
+            clean.append(t)
+        if tkw or akw:
+            matched = [t for t in clean
+                       if (not tkw or tkw in (t.get("title") or "").lower())
+                       and (not akw or akw in (t.get("artist") or "").lower())]
+            if matched:
+                return matched
+            # loose fallback only for user requests, never for pool picks
+            return [] if strict else clean
+        return clean
 
-    def _search_video(self, query: str, tkw="", akw=""):
+    def _search_video(self, query: str, tkw="", akw="", strict=False):
         try:
             hits = self.eng.search(query, flt="songs", limit=8)
         except Exception as e:
             self.log(f"search '{query}' failed: {e}")
             return None
-        picks = self._filter_hits(hits, tkw, akw)
+        picks = self._filter_hits(hits, tkw, akw, strict=strict)
         return picks[0] if picks else None
 
     def request_song(self, query: str, front: bool = True) -> bool:
@@ -206,7 +208,8 @@ class Station:
                     for i, e in enumerate(queue[:4]):
                         if e.get("videoId") is None:
                             hit = self._search_video(e["q"], e.get("tkw", ""),
-                                                     e.get("akw", ""))
+                                                     e.get("akw", ""),
+                                                     strict=True)
                             if hit:
                                 e["videoId"] = hit["videoId"]
                                 e["title"] = hit.get("title") or e["q"]
@@ -214,6 +217,7 @@ class Station:
                                 e["dur_str"] = hit.get("duration") or ""
                                 self.log(f"pool resolved: {e['title']}")
                             else:
+                                self.log(f"pool skip (no clean match): {e['q']}")
                                 self._drop(i)
                             break  # one search per pass
                     # 3) ensure files for the first two entries
@@ -239,8 +243,11 @@ class Station:
                         if ok and st.get("file"):
                             path = st["file"]
                         else:
+                            tiers = st.get("tierErrors") or {}
                             self.log(f"download failed {vid}: "
-                                     f"{st.get('error') or 'timeout'}")
+                                     f"{st.get('error') or 'timeout'} "
+                                     f"tiers={list(tiers.keys())} "
+                                     f"detail={ (tiers.get('sabr') or '')[:120] }")
                             try:
                                 from ytm import fastdl as _fdl
                                 _fdl._SHARED.invalidate()
@@ -309,11 +316,13 @@ class Station:
                "-filter_complex", graph, "-map", "[vout]", "-map", "1:a"]
         cmd += V.ffmpeg_common_args(SLATE_TS + ".tmp", SLATE_SEC)
         try:
-            subprocess.run(cmd, check=True, timeout=180)
+            subprocess.run(cmd, check=True, timeout=180,
+                           stdin=subprocess.DEVNULL)
             os.replace(SLATE_TS + ".tmp", SLATE_TS)
             self.log("slate rendered")
         except Exception as e:
             self.log(f"slate render failed: {e}")
+            time.sleep(3)
 
     def renderer_loop(self):
         from radio import visuals as V
@@ -490,6 +499,11 @@ class Station:
                         break
             if entry is None:
                 # gap filler
+                if not os.path.exists(SLATE_TS):
+                    self._render_slate()
+                    if not os.path.exists(SLATE_TS):
+                        time.sleep(2)
+                        continue
                 self.current = {"title": "Choosing the next song…",
                                 "artist": "Hindi Hits Radio", "videoId": "—"}
                 self.current_t0 = time.time()
