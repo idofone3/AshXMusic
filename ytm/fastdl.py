@@ -742,11 +742,11 @@ class SharedBrowser:
         except Exception:
             pass
         from seleniumbase import SB
+        from .browser import _chrome_flags
         from .cookies import parse_cookies
         sb_cm = SB(uc=True, xvfb=True, locale_code="en", disable_csp=True,
                    maximize=True,
-                   chromium_arg="--autoplay-policy=no-user-gesture-required,"
-                                "--mute-audio")
+                   chromium_arg=_chrome_flags() + ",--mute-audio")
         sb = sb_cm.__enter__()
         sb.open("https://music.youtube.com/?hl=en")
         sb.sleep(2)

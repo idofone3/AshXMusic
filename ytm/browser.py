@@ -28,6 +28,20 @@ from .cookies import parse_cookies
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def _chrome_flags() -> str:
+    """Chromium args shared by every launch. Container-safe: root (docker)
+    gets --no-sandbox because chrome refuses its sandbox as uid 0, and
+    --disable-dev-shm-usage keeps /dev/shm (64MB on many PaaS) from OOM."""
+    flags = ("--autoplay-policy=no-user-gesture-required,"
+             "--disable-dev-shm-usage,--disable-gpu")
+    try:
+        if os.geteuid() == 0:
+            flags += ",--no-sandbox"
+    except AttributeError:
+        pass
+    return flags
+
 ITAG_MAP = {
     "140": ("m4a", "mp4a.40.2"), "141": ("m4a", "mp4a.40.2"),
     "139": ("m4a", "mp4a.40.5"), "256": ("m4a", "mp4a.40.5"),
@@ -124,7 +138,7 @@ def get_streams_via_browser(video_id: str, raw_cookie: str,
     player_details: dict = {}
 
     with SB(uc=True, xvfb=True, locale_code="en", disable_csp=True,
-            maximize=True, chromium_arg="--autoplay-policy=no-user-gesture-required") as sb:
+            maximize=True, chromium_arg=_chrome_flags()) as sb:
         sb.open("https://music.youtube.com/?hl=en")
         sb.sleep(2)
         for c in parse_cookies(raw_cookie):
@@ -306,7 +320,7 @@ def capture_audio_via_browser(video_id: str, raw_cookie: str,
     duration = 0
 
     with SB(uc=True, xvfb=True, locale_code="en", disable_csp=True,
-            maximize=True, chromium_arg="--autoplay-policy=no-user-gesture-required") as sb:
+            maximize=True, chromium_arg=_chrome_flags()) as sb:
         sb.open("https://music.youtube.com/?hl=en")
         sb.sleep(2)
         for c in parse_cookies(raw_cookie):

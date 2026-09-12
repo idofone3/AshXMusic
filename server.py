@@ -1,11 +1,21 @@
 """
-YTMusic Download API — FastAPI wrapper around the pure-python ytm engine.
+AshXMusic API — FastAPI wrapper around the pure-python ytm engine.
 
-Run:  python3 run.py          (serves on 0.0.0.0:8000)
+Run:  python3 run.py          (serves on 0.0.0.0:${PORT:-8000})
 Docs: http://localhost:8000/docs
+
+Environment (all optional):
+  PORT                 listen port (Render sets it; default 8000)
+  YTM_DL_DIR           downloads dir (default ./downloads; use /tmp/... on
+                       ephemeral hosts like the Render free tier — no disk)
+  COOKIES_B64          base64 of cookies.txt, used when cookies.txt missing
+  TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+                       seed the telegram auto-push config when nothing is
+                       saved yet (persisted to data/telegram.json)
+  YTM_NO_TG=1          disable per-download telegram pushes entirely
 """
+import base64
 import os
-import threading
 from typing import Optional
 
 import requests
@@ -18,31 +28,34 @@ from ytm.telegram import get_logger as tg_logger
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 COOKIE_PATH = os.path.join(BASE, "cookies.txt")
-DOWNLOADS_DIR = os.path.join(BASE, "downloads")
+DOWNLOADS_DIR = os.environ.get("YTM_DL_DIR") or os.path.join(BASE, "downloads")
 
-app = FastAPI(title="YTMusic Download API", version="2.0.0",
-              description="Personal YouTube Music search/stream/download API "
+# ephemeral hosts (Render free tier has no disks): seed cookies from env
+if not os.path.exists(COOKIE_PATH) and os.environ.get("COOKIES_B64"):
+    try:
+        with open(COOKIE_PATH, "wb") as _f:
+            _f.write(base64.b64decode(os.environ["COOKIES_B64"]))
+        print("[server] cookies restored from COOKIES_B64", flush=True)
+    except Exception as _e:
+        print(f"[server] COOKIES_B64 decode failed: {_e}", flush=True)
+
+app = FastAPI(title="AshXMusic API", version="3.0.0",
+              description="YouTube Music search/stream/download API "
                           "(pure python + seleniumbase, no premade YT libs). "
                           "All downloads are mp4 with embedded cover art; "
                           "optional Telegram auto-push.")
 engine = Engine(COOKIE_PATH, DOWNLOADS_DIR)
 tg = tg_logger(BASE)
 
-
-@app.on_event("startup")
-def _start_bot():
-    """Background Telegram bot: long-polls /get commands whenever a bot
-    token + chat are configured (data/telegram.json or env)."""
-    from ytm.telegram_bot import get_bot
-    started = get_bot(BASE, engine).start()
-    print(f"[server] telegram bot {'started' if started else 'not configured'}",
-          flush=True)
-
-
-@app.get("/bot")
-def bot_status():
-    from ytm.telegram_bot import get_bot
-    return get_bot(BASE, engine).status()
+# seed the telegram push config from env when nothing is saved yet
+if (not tg.status()["configured"] and os.environ.get("TELEGRAM_BOT_TOKEN")
+        and os.environ.get("TELEGRAM_CHAT_ID")):
+    try:
+        tg.set(os.environ["TELEGRAM_BOT_TOKEN"],
+               os.environ["TELEGRAM_CHAT_ID"], True)
+        print("[server] telegram push configured from env", flush=True)
+    except Exception as _e:
+        print(f"[server] telegram env seeding failed: {_e}", flush=True)
 
 
 class CookieBody(BaseModel):

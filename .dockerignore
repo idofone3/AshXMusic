@@ -1,0 +1,15 @@
+.git
+.gitignore
+Dockerfile
+render.yaml
+.dockerignore
+README.md
+__pycache__/
+**/__pycache__/
+*.pyc
+*.log
+downloads/
+downloaded_files/
+data/
+cookies.txt
+test_*

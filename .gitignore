@@ -1,16 +1,8 @@
-# secrets / local data — never commit these
-data/cookies.txt
-data/telegram.json
-cookies.txt
-*.log
-
-# runtime artifacts
-radio/cache/
-radio/rendered/
-radio/work/
-radio/state/
-downloads/
-downloaded_files/
 __pycache__/
 *.pyc
-.tmp_*
+*.log
+.DS_Store
+downloads/
+downloaded_files/
+data/
+cookies.txt
