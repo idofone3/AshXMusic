@@ -1,0 +1,150 @@
+# AshXMusic — host the API on a GitHub runner and expose it through the
+# owner's Cloudflare Tunnel (Zero Trust public hostname -> https://localhost:8080).
+#
+# Lifecycle:
+#   * one run keeps the tunnel up for ~5.5h, then a watchdog dispatches a
+#     fresh run (workflow_dispatch chains forward; the 6h GitHub job limit
+#     is never hit) and lets the queued successor take over.
+#   * a 6h schedule acts as a safety net if the chain ever breaks.
+#   * cookies + telegram push config are preinitialised from repo secrets,
+#     so every fresh runner is ready-to-use with zero manual steps.
+#
+# To force a redeploy with new code: cancel the running workflow, then
+# re-run it (Actions -> host -> Run workflow).
+
+name: host
+
+on:
+  workflow_dispatch:
+    inputs:
+      origin_scheme:
+        description: "Tunnel origin scheme (Zero Trust config = https)"
+        required: false
+        default: "https"
+        type: choice
+        options: [https, http]
+  schedule:
+    - cron: "23 */6 * * *"  # safety net; primary restart path is self-chaining
+
+concurrency:
+  group: api-host
+  cancel-in-progress: false  # successor queues instead of killing the tunnel
+
+permissions:
+  contents: read
+  actions: write  # watchdog re-dispatches this workflow via GITHUB_TOKEN
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355  # stay under GitHub's 6h job ceiling
+    env:
+      ORIGIN_SCHEME: ${{ github.event.inputs.origin_scheme || 'https' }}
+      ORIGIN_PORT: "8080"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install engine deps + Chrome
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python scripts/install_cft_chrome.py
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore cookies (preinitialised)
+        run: |
+          printf '%s' "$COOKIES_B64" | base64 -d > cookies.txt
+          echo "cookies bytes: $(wc -c < cookies.txt)"
+        env:
+          COOKIES_B64: ${{ secrets.COOKIES_B64 }}
+
+      - name: Origin TLS cert (tunnel dials https://localhost:8080)
+        run: |
+          if [ "$ORIGIN_SCHEME" != "https" ]; then
+            echo "plain http origin - skipping TLS setup"
+            exit 0
+          fi
+          mkdir -p /tmp/certs
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+            -keyout /tmp/certs/key.pem -out /tmp/certs/cert.pem \
+            -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+          sudo cp /tmp/certs/cert.pem /usr/local/share/ca-certificates/ashx-origin.crt
+          sudo update-ca-certificates
+          echo "SSL_CERTFILE=/tmp/certs/cert.pem" >> "$GITHUB_ENV"
+          echo "SSL_KEYFILE=/tmp/certs/key.pem" >> "$GITHUB_ENV"
+
+      - name: Start API on :8080
+        run: |
+          export PORT="$ORIGIN_PORT"
+          export YTM_DL_DIR=/tmp/downloads
+          # preinitialised telegram auto-push (seeded into data/telegram.json)
+          export TELEGRAM_BOT_TOKEN="${{ secrets.TG_BOT_TOKEN }}"
+          export TELEGRAM_CHAT_ID="${{ secrets.TG_CHAT_ID }}"
+          nohup python run.py > api.log 2>&1 &
+          OK=""
+          for i in $(seq 1 120); do
+            C=$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost:$ORIGIN_PORT/health" 2>/dev/null)
+            [ "$C" = "200" ] && OK=tls && break
+            C=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$ORIGIN_PORT/health" 2>/dev/null)
+            [ "$C" = "200" ] && OK=plain && break
+            sleep 2
+          done
+          if [ -z "$OK" ]; then
+            echo "--- api.log ---"; tail -80 api.log; exit 1
+          fi
+          echo "API healthy ($OK) on :$ORIGIN_PORT"
+          curl -sk "https://localhost:$ORIGIN_PORT/health" 2>/dev/null \
+            || curl -s "http://localhost:$ORIGIN_PORT/health"
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o /tmp/cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          sudo install -m 755 /tmp/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Run tunnel + self-chain watchdog
+        env:
+          TUNNEL_TOKEN: ${{ secrets.TUNNEL_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          REF: ${{ github.ref_name }}
+        run: |
+          # tunnel lifetime cap: 5h30m (well under the 6h runner ceiling)
+          timeout 19800 cloudflared tunnel run --token "$TUNNEL_TOKEN" > tunnel.log 2>&1 &
+          CFPID=$!
+
+          # watchdog: chain a successor before this runner dies, or
+          # immediately if cloudflared died early
+          (
+            SECS=0
+            while kill -0 "$CFPID" 2>/dev/null && [ "$SECS" -lt 19560 ]; do
+              sleep 30; SECS=$((SECS+30))
+            done
+            echo "[watchdog] dispatching successor run..."
+            gh api -X POST "repos/$REPO/actions/workflows/host.yml/dispatches" \
+              -f ref="$REF" -f "origin_scheme=$ORIGIN_SCHEME" >/dev/null 2>&1 || true
+            for i in $(seq 1 36); do
+              N=$(gh api "repos/$REPO/actions/runs?per_page=15" \
+                --jq "[.workflow_runs[] | select(.id != ${RUN_ID} and (.status == \"queued\" or .status == \"in_progress\"))] | length" 2>/dev/null || echo 0)
+              [ "$N" -gt 0 ] && break
+              sleep 20
+            done
+            sleep 60  # short grace so the dispatch is durable before exit
+            kill "$CFPID" 2>/dev/null || true
+          ) &
+          WATCHDOG=$!
+
+          wait "$CFPID" 2>/dev/null || true
+          echo "=== tunnel.log (connections / errors) ==="
+          grep -Ei "Registered tunnel connection|Unregistered|error|failed" tunnel.log | head -30 || true
+          wait "$WATCHDOG" 2>/dev/null || true
+          exit 0

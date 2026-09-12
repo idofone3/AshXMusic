@@ -3,3 +3,4 @@ uvicorn[standard]>=0.29
 requests>=2.31
 seleniumbase>=4.30
 pyvirtualdisplay>=3.0
+easyprocess>=1.1
