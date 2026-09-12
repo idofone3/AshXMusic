@@ -28,6 +28,7 @@ from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
 from pydantic import BaseModel
 
 from ytm.engine import Engine, YTApiError
+from ytm.innertube import Innertube
 from ytm.telegram import get_logger as tg_logger
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -96,17 +97,29 @@ def _mint_one(video_id: str, quality: str = "best", budget: float = 28.0) -> dic
         ex.shutdown(wait=False)
 
 
+_MINT_IT: Optional[Innertube] = None      # dedicated session for mints
+
+
+def _mint_innertube() -> Innertube:
+    """Own Innertube session for minting -> pure API calls that never take
+    engine._lock, so /search and /health stay snappy while mints run."""
+    global _MINT_IT
+    if _MINT_IT is None:
+        _MINT_IT = Innertube(engine._cookie_raw)
+    return _MINT_IT
+
+
 def _mint_sync(video_id: str, quality: str) -> dict:
-    # rung 1: innertube player API only (fast, no shared browser)
+    # rung 1: innertube player API on the dedicated session (lock-free)
     try:
-        with engine._lock:
-            pr, client, streams = engine.it.player(video_id)
+        it = _mint_innertube()
+        pr, client, streams = it.player(video_id)
         if streams:
             s = engine.pick_stream(streams, quality)
             if s.get("url"):
                 return {"url": s["url"],
                         "stream": {k: v for k, v in s.items() if k != "url"},
-                        "track": engine.it.track_from_player(pr),
+                        "track": it.track_from_player(pr),
                         "source": client}
     except Exception:
         pass
