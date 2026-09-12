@@ -110,7 +110,23 @@ def _mint_innertube() -> Innertube:
 
 
 def _mint_sync(video_id: str, quality: str) -> dict:
-    # rung 1: innertube player API on the dedicated session (lock-free)
+    """Rung 1: capture the pot-carrying videoplayback url from a real SABR
+    playback session in the shared browser (works on datacenter IPs — same
+    machinery as the download tier; the CLIENT then streams the bytes from
+    its own IP, so googlevideo sees a residential connection).
+    Rung 2: innertube player API (dedicated lock-free session).
+    Rung 3: full resolve ladder."""
+    try:
+        from ytm import fastdl
+        r = fastdl.sabr_playback_url(video_id, engine._cookie_raw, max_wait=18)
+        if r.get("url"):
+            return {"url": r["url"],
+                    "stream": {"mimeType": r.get("mime") or "audio/mp4",
+                               "container": "m4a"},
+                    "track": r.get("track") or {},
+                    "source": "sabr-capture"}
+    except Exception:
+        pass
     try:
         it = _mint_innertube()
         pr, client, streams = it.player(video_id)
@@ -123,7 +139,7 @@ def _mint_sync(video_id: str, quality: str) -> dict:
                         "source": client}
     except Exception:
         pass
-    # rung 2: full ladder (innertube -> browser player -> browser legacy)
+    # rung 3: full ladder (innertube -> browser player -> browser legacy)
     info = engine.direct_url(video_id, quality)
     s = info["stream"]
     return {"url": s["url"],
@@ -131,7 +147,7 @@ def _mint_sync(video_id: str, quality: str) -> dict:
             "track": info["track"], "source": info["source"]}
 
 
-def _mint_bg_start(video_id: str, budget: float = 75.0) -> bool:
+def _mint_bg_start(video_id: str, budget: float = 110.0) -> bool:
     """Kick off a background mint for one video (False if already running
     or already cached). Never blocks the caller."""
     if _mint_get(video_id):
@@ -175,7 +191,7 @@ def _prewarm_mints(video_ids: list):
                     continue
                 _MINT_BUSY.add(vid)
             try:
-                _mint_put(vid, _mint_one(vid, "best", budget=75.0))
+                _mint_put(vid, _mint_one(vid, "best", budget=110.0))
                 print(f"[mint] prewarmed {vid}", flush=True)
             except Exception as e:
                 print(f"[mint] prewarm {vid} failed: {str(e)[:100]}", flush=True)
