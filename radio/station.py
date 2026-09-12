@@ -38,7 +38,9 @@ for d in (CACHE, RENDERED, WORK, COVERS):
 
 FIFO = "/tmp/radio_stream.ts"
 SLATE_TS = os.path.join(RENDERED, "__slate.ts")
+PAUSE_TS = os.path.join(RENDERED, "__paused.ts")
 SLATE_SEC = 20.0
+PAUSE_SEC = 6.0   # short chunks -> /resume takes effect within ~6s
 
 
 def log(msg: str):
@@ -71,17 +73,28 @@ class Station:
         self.args = args
         self.alive = True
         self.deadline = time.time() + args.hours * 3600
+        self.started_at = time.time()
         self.qlock = threading.RLock()
         self.skip_ev = threading.Event()     # pump: cut current file
         self.jump_ev = threading.Event()     # renderer: abort current render
+        self.pause_ev = threading.Event()    # pump: loop the PAUSED slate
         self.searching = False               # one search at a time
         self.current = None                  # entry being pumped
         self.current_t0 = 0.0
+        self.pause_offset = 0.0              # song position at pause
+        self._pause_vid = None               # which song was paused
         self.np_done = set()                 # videoIds already announced
         self._retries = {}                   # videoId -> failed push count
+        self.state_changed = False           # -> autosave soon
         self.tg = None                       # wired in run()
         import stateio as S
         self.S = S
+        # slates must reflect THIS boot's branding/settings — drop caches
+        for p in (SLATE_TS, PAUSE_TS, SLATE_TS + ".tmp", PAUSE_TS + ".tmp"):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
         if args.rtmp.endswith("/"):
             self.rtmp = args.rtmp + args.key
         else:
@@ -176,6 +189,75 @@ class Station:
     def request_skip(self):
         self.skip_ev.set()
 
+    # ---------------- pause / resume ----------------
+
+    def request_pause(self) -> bool:
+        if not (self.current and self.current.get("videoId")):
+            return False
+        self.pause_offset = max(0.0, time.time() - self.current_t0)
+        self._pause_vid = self.current.get("videoId")
+        self.pause_ev.set()
+        self.log(f"pause requested at {self.pause_offset:.0f}s of "
+                 f"{self.current.get('title')}")
+        return True
+
+    def request_resume(self) -> bool:
+        if not self.pause_ev.is_set():
+            return False
+        self.pause_ev.clear()
+        self.log("resume requested")
+        return True
+
+    # ---------------- queue manipulation ----------------
+
+    def request_video(self, hit: dict, front: bool = True) -> dict:
+        """Queue an already-resolved search hit (from /search pick)."""
+        entry = {"videoId": hit["videoId"],
+                 "title": hit.get("title") or hit["videoId"],
+                 "artist": hit.get("artist") or "Unknown",
+                 "dur_str": hit.get("duration") or "",
+                 "by": "search", "added": time.time()}
+        with self.qlock:
+            if front:
+                self.state["queue"].insert(0, entry)
+            else:
+                self.state["queue"].append(entry)
+        self.log(f"queued (pick) {entry['title']} [{entry['videoId']}]")
+        if front:
+            self.jump_ev.set()
+            self.skip_ev.set()
+        return entry
+
+    def remove_at(self, idx: int):
+        with self.qlock:
+            if 0 <= idx < len(self.state["queue"]):
+                self.state["queue"].pop(idx)
+                self.state_changed = True
+
+    def shuffle_queue(self):
+        import random
+        with self.qlock:
+            q = self.state["queue"]
+            # keep a user-requested front item on top, shuffle the rest
+            head = [e for e in q[:1] if e.get("by")]
+            rest = q[len(head):]
+            random.shuffle(rest)
+            self.state["queue"] = head + rest
+            self.state_changed = True
+
+    def clear_queue(self):
+        with self.qlock:
+            self.state["queue"] = []
+            self.state_changed = True
+        self.log("queue cleared")
+
+    def invalidate_renders(self):
+        """Drop rendered TS so queued songs re-render (e.g. new volume)."""
+        with self.qlock:
+            for e in self.state["queue"]:
+                e.pop("ts", None)
+        self.log("renders invalidated (will re-render with new settings)")
+
     def current_entry(self):
         with self.qlock:
             return dict(self.current) if self.current else None
@@ -200,8 +282,9 @@ class Station:
             try:
                 with self.qlock:
                     queue = self.state["queue"]
-                    # 1) keep the radio queue stocked (autoplay mix)
-                    if len(queue) < 6:
+                    # 1) keep the radio queue stocked (autoplay mix) —
+                    #    only when autoplay is enabled (/autoplay)
+                    if len(queue) < 6 and self.state.get("autoplay", True):
                         recent = {e.get("videoId", "") for e in queue}
                         recent |= {h.get("videoId", "") for h in
                                    self.state["history"][-30:]}
@@ -322,6 +405,27 @@ class Station:
                 return
             self._render_slate_inner()
 
+    def _render_pause_slate(self):
+        if not hasattr(self, "_slate_lock"):
+            self._slate_lock = threading.Lock()
+        with self._slate_lock:
+            if os.path.exists(PAUSE_TS) and os.path.getsize(PAUSE_TS) > 10000:
+                return
+            from radio import visuals as V
+            graph = V.build_pause_graph(WORK, station=self.args.station)
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                   "-f", "lavfi", "-i", f"color=c=0x0B0E16:s={V.W}x{V.H}:r=30",
+                   "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                   "-filter_complex", graph, "-map", "[vout]", "-map", "1:a"]
+            cmd += V.ffmpeg_common_args(PAUSE_TS + ".tmp", PAUSE_SEC)
+            try:
+                subprocess.run(cmd, check=True, timeout=180,
+                               stdin=subprocess.DEVNULL)
+                os.replace(PAUSE_TS + ".tmp", PAUSE_TS)
+                self.log("pause slate rendered")
+            except Exception as e:
+                self.log(f"pause slate render failed: {e}")
+
     def _render_slate_inner(self):
         from radio import visuals as V
         graph = V.build_slate_graph(WORK)
@@ -363,14 +467,20 @@ class Station:
                 dur = target.get("dur") or ffprobe_dur(target["file"]) or 180.0
                 cover = self._cover_for(vid)
                 self.log(f"rendering: {target.get('title')}")
+                by = target.get("by")
+                queued_by = by if (by and by != "search") else ""
                 graph = V.build_song_graph(target.get("title", ""),
                                            target.get("artist", ""),
-                                           dur, WORK)
+                                           dur, WORK,
+                                           station=self.args.station,
+                                           queued_by=queued_by)
                 cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                        "-i", target["file"], "-loop", "1", "-i", cover,
                        "-filter_complex", graph,
                        "-map", "[vout]", "-map", "0:a"]
-                cmd += V.ffmpeg_common_args(ts_path + ".tmp", dur)
+                cmd += V.ffmpeg_common_args(ts_path + ".tmp", dur,
+                                            volume=self.state.get("volume",
+                                                                  100.0))
                 p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.PIPE,
                                      stdin=subprocess.DEVNULL)
@@ -417,21 +527,25 @@ class Station:
         except Exception:
             pass
 
-    def _pump_once(self, src: str, offset: float, seconds: float) -> float:
+    def _pump_once(self, src: str, offset: float, seconds: float,
+                   ss: float = 0.0) -> float:
         """Remux src into the fifo with a timestamp offset; returns the
-        seconds actually played (cuts early on skip / streamer death)."""
+        seconds actually played (cuts early on skip / streamer death).
+        `ss` resumes mid-file (used after pause)."""
         from radio import visuals as V
         prog = os.path.join(WORK, "remux_progress.txt")
         try:
             os.remove(prog)
         except OSError:
             pass
-        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
-               "-i", src, "-c", "copy", "-muxdelay", "0", "-muxpreload", "0",
-               "-mpegts_flags", "+resend_headers",
-               "-output_ts_offset", f"{offset:.3f}",
-               "-progress", prog, "-nostats",
-               "-f", "mpegts", FIFO]
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"]
+        if ss > 0.5:
+            cmd += ["-ss", f"{ss:.2f}"]
+        cmd += ["-i", src, "-c", "copy", "-muxdelay", "0", "-muxpreload", "0",
+                "-mpegts_flags", "+resend_headers",
+                "-output_ts_offset", f"{offset:.3f}",
+                "-progress", prog, "-nostats",
+                "-f", "mpegts", FIFO]
         remux_log = os.path.join(WORK, "remux.log")
         remux_err = open(remux_log, "ab")
         t0 = time.time()
@@ -461,6 +575,9 @@ class Station:
                 p.wait(5)
             except Exception:
                 p.kill()
+        if self.skip_ev.is_set():
+            self.skip_ev.clear()   # consumed here — loop-top handler is
+            # only for skips landing while idle/paused
         played = time.time() - t0
         ot = self._read_out_time(prog)
         if p.returncode == 0:
@@ -470,7 +587,8 @@ class Station:
             # killed (skip / watchdog) — trust the muxer's counter only;
             # an unreadable counter means nothing reached the stream
             played = ot if ot > 0 else 0.0
-        return max(0.0, min(played, seconds + 2.0))
+        played += ss  # resumed mid-file: the skipped head counts too
+        return max(0.0, min(played, seconds - ss + 2.0))
 
     def _read_out_time(self, prog: str) -> float:
         """Last muxed output time in seconds (ffmpeg 6/7 progress keys)."""
@@ -550,21 +668,47 @@ class Station:
             pass
 
     def _pump_forever(self, streamer):
+        import random
         off = 0.0
         stall_streak = 0
         warned = False
         self._render_slate()
         while self.alive and streamer.poll() is None \
                 and time.time() < self.deadline:
-            self.skip_ev.clear()
-            if self.skip_ev.is_set():      # request landed between checks
+            # ---- a skip landing while idle/paused: cut the pending song
+            if self.skip_ev.is_set():
+                self.skip_ev.clear()
+                self.pause_ev.clear()
+                self.pause_offset = 0.0
+                self._pause_vid = None
+                with self.qlock:
+                    for e in self.state["queue"]:
+                        if e.get("ts"):
+                            try:
+                                self.state["queue"].remove(e)
+                            except ValueError:
+                                pass
+                            break
                 continue
+
+            # ---- PAUSED: loop the pause slate until /resume ----
+            if self.pause_ev.is_set():
+                self._render_pause_slate()
+                if not os.path.exists(PAUSE_TS):
+                    time.sleep(1)
+                    continue
+                played = self._pump_once(PAUSE_TS, off, PAUSE_SEC)
+                off += played
+                continue
+
             entry = None
             with self.qlock:
-                for e in self.state["queue"]:
-                    if e.get("ts"):
-                        entry = e
-                        break
+                ready = [e for e in self.state["queue"] if e.get("ts")]
+                if ready:
+                    if self.state.get("shuffle") and len(ready) > 1:
+                        entry = random.choice(ready)
+                    else:
+                        entry = ready[0]
             if entry is None:
                 # gap filler
                 if not os.path.exists(SLATE_TS):
@@ -572,8 +716,16 @@ class Station:
                     if not os.path.exists(SLATE_TS):
                         time.sleep(2)
                         continue
-                self.current = {"title": "Choosing the next song…",
-                                "artist": "Hindi Hits Radio", "videoId": "—"}
+                with self.qlock:
+                    qlen = len(self.state["queue"])
+                if qlen == 0 and not self.state.get("autoplay", True):
+                    self.current = {"title": "💤 Autoplay off — queue empty",
+                                    "artist": "send /play <song name>",
+                                    "videoId": "—"}
+                else:
+                    self.current = {"title": "Choosing the next song…",
+                                    "artist": self.args.station,
+                                    "videoId": "—"}
                 self.current_t0 = time.time()
                 played = self._pump_once(SLATE_TS, off, SLATE_SEC)
                 off += played
@@ -595,12 +747,25 @@ class Station:
                         pass
                     time.sleep(30)
                 continue
+
+            # ---- play the entry (resume mid-song after a pause) ----
             self.current = entry
-            self.current_t0 = time.time()
-            self._notify_np(entry)
+            resume_at = 0.0
+            if self.pause_offset > 1.0 and \
+                    entry.get("videoId") == self._pause_vid:
+                resume_at = min(self.pause_offset,
+                                max(0.0, (entry.get("dur") or 0) - 5))
+            self._pause_vid = None
+            self.pause_offset = 0.0
+            self.current_t0 = time.time() - resume_at
+            if resume_at <= 1.0:
+                self._notify_np(entry)
             dur = entry.get("dur") or ffprobe_dur(entry["ts"]) or 200.0
-            self.log(f"ON AIR: {entry.get('title')} ({dur:.0f}s)")
-            played = self._pump_once(entry["ts"], off, dur)
+            self.log(f"ON AIR: {entry.get('title')} "
+                     f"({resume_at:.0f}s→{dur:.0f}s)"
+                     if resume_at > 1.0 else
+                     f"ON AIR: {entry.get('title')} ({dur:.0f}s)")
+            played = self._pump_once(entry["ts"], off, dur, ss=resume_at)
             off += played
             if played < 5.0:
                 # nothing actually reached the stream — keep the song,
@@ -642,21 +807,30 @@ class Station:
             warned = False
             self._retries.pop(entry.get("videoId"), None)
             self.current = None
-            # consume the entry (queue + files) unless it must be kept
             with self.qlock:
                 try:
                     self.state["queue"].remove(entry)
                 except ValueError:
                     pass
-                self.state["history"].append(
-                    {"videoId": entry["videoId"],
-                     "title": entry.get("title"),
-                     "at": time.time()})
-                self.state["history"] = self.state["history"][-80:]
-            try:
-                os.remove(entry["ts"])
-            except OSError:
-                pass
+                loop = self.state.get("loop", "off")
+                self.state["songsPlayed"] = \
+                    int(self.state.get("songsPlayed", 0)) + 1
+                if loop == "one":
+                    self.state["queue"].insert(0, entry)  # instant replay
+                elif loop == "all":
+                    self.state["queue"].append(entry)  # circles the queue
+                else:
+                    self.state["history"].append(
+                        {"videoId": entry["videoId"],
+                         "title": entry.get("title"),
+                         "at": time.time()})
+                    self.state["history"] = self.state["history"][-80:]
+                self.state_changed = True
+            if loop == "off":
+                try:
+                    os.remove(entry["ts"])
+                except OSError:
+                    pass
 
     # ---------------- state autosave ----------------
 
@@ -684,18 +858,28 @@ class Station:
         ]
         for t in threads:
             t.start()
-        from radio.tgbot import TgBot
+        from radio.bot import TgBot
         self.tg = TgBot(self)
         self.tg.start()
         try:
             self.tg.reply(self.tg.control,
-                          "📻 <b>Radio is ON AIR</b> — Hindi Hits 24/7\n"
-                          "Send any song name here and it plays next!")
+                          f"📻 <b>{self.args.station} is ON AIR</b> — "
+                          f"24/7 YouTube Music radio\n"
+                          "Send any song name here and it plays next! "
+                          "Buttons on the Now-Playing message = full "
+                          "remote (⏸ ⏭ 🔁 🔀).")
         except Exception:
             pass
         try:
             while self.alive and time.time() < self.deadline:
                 time.sleep(5)
+                # /configure wants a restart with new credentials:
+                # exit gracefully — the workflow chain re-launches us and
+                # the next run picks the fresh secrets.
+                if self.S.restart_requested():
+                    self.log("RESTART marker present — exiting for "
+                             "re-launch with new credentials")
+                    break
         except KeyboardInterrupt:
             pass
         self.alive = False
@@ -712,9 +896,9 @@ def main():
     ap.add_argument("--song", default="")
     ap.add_argument("--rtmp", default=os.environ.get("RTMP_URL", ""))
     ap.add_argument("--key", default=os.environ.get("RTMP_KEY", ""))
-    ap.add_argument("--station", default="Hindi Hits Radio")
+    ap.add_argument("--station", default="AshXMusic")
     ap.add_argument("--clear-stop", action="store_true",
-                    help="manual run: clear a previous STOP marker")
+                    help="manual run: clear previous STOP/RESTART markers")
     args = ap.parse_args()
     if not (args.rtmp and args.key):
         log("missing RTMP credentials (--rtmp/--key)")
@@ -722,10 +906,14 @@ def main():
     import stateio as S
     if args.clear_stop:
         S.clear_stop()
+        S.clear_restart()
         S.push_state_branch(ROOT)
     if S.stop_requested():
         log("STOP marker present — not starting (chain halted)")
         sys.exit(0)
+    if S.restart_requested():
+        # leftover marker (previous run died before consuming it) — clear
+        S.clear_restart()
     st = Station(args)
     st.run()
 

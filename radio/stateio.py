@@ -9,12 +9,15 @@ import time
 STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
 STOP_PATH = os.path.join(STATE_DIR, "STOP")
+RESTART_PATH = os.path.join(STATE_DIR, "RESTART")
 
 _LOCK = threading.Lock()
 
 
 def _new_state():
-    return {"queue": [], "history": [], "current": {}, "savedAt": 0}
+    return {"queue": [], "history": [], "current": {}, "savedAt": 0,
+            "autoplay": True, "loop": "off", "shuffle": False,
+            "volume": 100.0, "songsPlayed": 0}
 
 
 def load() -> dict:
@@ -22,12 +25,11 @@ def load() -> dict:
         try:
             with open(STATE_PATH) as f:
                 st = json.load(f)
-            st.setdefault("queue", [])
-            st.setdefault("history", [])
-            st.setdefault("current", {})
-            return st
         except Exception:
-            return _new_state()
+            st = _new_state()
+    for k, v in _new_state().items():
+        st.setdefault(k, v)
+    return st
 
 
 def save(st: dict):
@@ -55,6 +57,23 @@ def clear_stop():
 
 def stop_requested() -> bool:
     return os.path.exists(STOP_PATH)
+
+
+def set_restart():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(RESTART_PATH, "w") as f:
+        f.write("restart requested\n")
+
+
+def clear_restart():
+    try:
+        os.remove(RESTART_PATH)
+    except OSError:
+        pass
+
+
+def restart_requested() -> bool:
+    return os.path.exists(RESTART_PATH)
 
 
 def push_state_branch(repo_dir: str):
@@ -94,6 +113,8 @@ def push_state_branch(repo_dir: str):
         # copy state files
         import shutil
         for name in os.listdir(STATE_DIR):
+            if name.endswith(".tmp"):
+                continue
             shutil.copy(os.path.join(STATE_DIR, name), os.path.join(tmp, name))
         run("git", "add", "-A")
         run("git", "-c", "user.email=radio@bot.local",
@@ -127,7 +148,7 @@ def pull_state_branch(repo_dir: str) -> bool:
         if r.returncode != 0:
             return False
         os.makedirs(STATE_DIR, exist_ok=True)
-        for name in ("state.json", "STOP"):
+        for name in ("state.json", "STOP", "RESTART"):
             src = os.path.join(tmp, name)
             dst = os.path.join(STATE_DIR, name)
             if os.path.exists(src) and not os.path.exists(dst):

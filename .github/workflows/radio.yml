@@ -1,4 +1,4 @@
-name: 24/7 Radio
+name: AshXMusic 24/7 Radio
 
 on:
   workflow_dispatch:
@@ -27,6 +27,10 @@ on:
         description: "STOP the 24/7 chain (writes STOP, no stream)"
         required: false
         default: "false"
+
+permissions:
+  actions: write
+  contents: write
 
 concurrency:
   group: radio-stream
@@ -106,11 +110,13 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           GH_PAT: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}   # gh CLI for /configure secrets
         run: |
           export PATH=$HOME/.local/bin:$PATH
           python radio/station.py \
             --hours "${{ inputs.hours || '5.5' }}" \
             --song "${{ inputs.song }}" \
+            --station "AshXMusic" \
             --rtmp "$RTMP_URL" --key "$RTMP_KEY" \
             ${{ inputs.stop != 'true' && '--clear-stop' || '' }}
 

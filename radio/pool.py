@@ -29,7 +29,7 @@ POOL = [
     ("Piya O Re Piya Atif Aslam", "piya o re", ""),
     ("Raatan Lambiyan Jubin Nautiyal", "raatan", ""),
     ("Ranjha Jasleen Royal B Praak", "ranjha", ""),
-    ("Machhli坐标", "machhli", ""),  # placeholder replaced below
+    ("Machhli Bollywood", "machhli", ""),
     ("Kahani Suno 2.0 Kaifi Khalil", "kahani suno", "kaifi"),
     ("Pasoori Ali Sethi Shae Gill", "pasoori", ""),
     ("O Bedardeya Arijit Singh", "bedardeya", ""),
@@ -48,7 +48,6 @@ POOL = [
 ]
 
 # NOTE: keep the list clean & purely latin; append more below
-POOL = [p for p in POOL if "坐标" not in p[0]]
 
 POOL += [
     # ---- 2010s big ones ----
