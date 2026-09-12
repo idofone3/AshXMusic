@@ -178,3 +178,59 @@ def to_mp4(src: str, dest: str, title: str = "", artist: str = "",
     out["convertSec"] = round(time.time() - t0, 2)
     out["audioOp"] = "copy" if copy_audio else "transcode"
     return out
+
+
+def to_mp3(src: str, dest: str, title: str = "", artist: str = "",
+           thumb: Optional[str] = None,
+           album: str = "YouTube Music") -> Dict:
+    """Transcode any audio source to a full-quality 320 kbps mp3 with ID3v2
+    tags and embedded cover art (APIC). Requires ffmpeg/libmp3lame.
+    Writes atomically. Returns ffprobe info."""
+    src = os.path.abspath(src)
+    dest = os.path.abspath(dest)
+    if not os.path.exists(src):
+        raise RuntimeError(f"source missing: {src}")
+    if not available():
+        raise RuntimeError("ffmpeg not available for mp3 conversion")
+
+    tmp_fd, tmp_out = tempfile.mkstemp(prefix="mp3_", suffix=".part",
+                                       dir=os.path.dirname(dest) or ".")
+    os.close(tmp_fd)
+    os.remove(tmp_out)  # ffmpeg wants to create it itself
+
+    cmd = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", src]
+    has_thumb = thumb and os.path.exists(thumb)
+    if has_thumb:
+        cmd += ["-i", thumb]
+
+    cmd += ["-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "320k", "-ar",
+            "44100", "-ac", "2"]
+    if has_thumb:
+        cmd += ["-map", "1:v:0", "-c:v:0", "mjpeg", "-q:v:0", "3",
+                "-disposition:v:0", "attached_pic",
+                "-metadata:s:v", "title=Album cover",
+                "-metadata:s:v", "comment=Cover (front)"]
+
+    cmd += ["-id3v2_version", "3", "-write_id3v1", "1",
+            "-metadata", f"title={title}",
+            "-metadata", f"artist={artist}",
+            "-metadata", f"album_artist={artist}",
+            "-metadata", f"album={album}",
+            "-f", "mp3", tmp_out]
+
+    t0 = time.time()
+    try:
+        _run(cmd, timeout=300)
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        os.replace(tmp_out, dest)
+    except Exception:
+        if os.path.exists(tmp_out):
+            try:
+                os.remove(tmp_out)
+            except OSError:
+                pass
+        raise
+    out = probe(dest)
+    out["convertSec"] = round(time.time() - t0, 2)
+    out["audioOp"] = "mp3-320k"
+    return out

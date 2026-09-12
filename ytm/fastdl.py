@@ -1058,3 +1058,127 @@ def parallel_download(url: str, dest: str, total: int = 0,
             raise RuntimeError(f"incomplete: {done_bytes[0]}/{total}")
     finally:
         os.close(fd)
+
+
+# ------------------------------------------------------------------
+# instant streaming: cached pot urls + windowed range pump
+# ------------------------------------------------------------------
+_POT: Dict[str, Dict] = {}
+_POT_WAIT: Dict[str, threading.Event] = {}
+_POT_LOCK = threading.Lock()
+POT_TTL = 900.0            # paused sabr sessions stay answerable ~15 min
+
+
+def pot_url(video_id: str, raw_cookie: str, max_wait: int = 18) -> dict:
+    """Cached, single-flight sabr_playback_url. Concurrent callers wait on
+    the in-flight mint instead of double-playing in the browser (which
+    would poison both captures with the other song's urls)."""
+    for _ in range(3):
+        with _POT_LOCK:
+            m = _POT.get(video_id)
+            if m and time.time() - m["ts"] < POT_TTL:
+                return m
+            ev = _POT_WAIT.get(video_id)
+            mine = False
+            if ev is None:
+                ev = threading.Event()
+                _POT_WAIT[video_id] = ev
+                mine = True
+        if not mine:
+            ev.wait(timeout=60)
+            continue
+        try:
+            m = sabr_playback_url(video_id, raw_cookie, max_wait=max_wait)
+            m["ts"] = time.time()
+            with _POT_LOCK:
+                _POT[video_id] = m
+            return m
+        finally:
+            with _POT_LOCK:
+                _POT_WAIT.pop(video_id, None)
+            ev.set()
+    raise RuntimeError("pot url mint kept failing")
+
+
+def pot_invalidate(video_id: str):
+    with _POT_LOCK:
+        _POT.pop(video_id, None)
+
+
+def sabr_stream(video_id: str, raw_cookie: str, start: int = 0,
+                end: Optional[int] = None,
+                progress: Optional[Callable[[int], None]] = None):
+    """Generator of CLEAN audio bytes (UMP framing stripped) for the byte
+    range [start..end] of the song, via the pot-carrying SABR url.
+
+    - Windows are fetched IN-PAGE (real Chrome TLS fingerprint + valid
+      trusted PO token -> googlevideo serves datacenter IPs at full
+      speed, no throttle, no bot wall).
+    - The shared-browser lock is taken PER WINDOW only (~0.5s), so
+      downloads and other mints interleave between windows.
+    - Stale stream context (server answers control parts only) is healed
+      by re-playing the song once (fresh pot/cpn) and resuming at the
+      exact byte offset already delivered."""
+    from urllib.parse import urlparse, parse_qs
+    pos = max(0, int(start))
+    first = True
+    for attempt in range(2):
+        m = pot_url(video_id, raw_cookie)
+        url = m["url"]
+        q = parse_qs(urlparse(url).query)
+        clen = int((q.get("clen") or ["0"])[0])
+        if not clen:
+            pot_invalidate(video_id)
+            continue
+        end = clen - 1 if end is None else min(int(end), clen - 1)
+        if pos > end:
+            return
+        sb = _SHARED.acquire(raw_cookie)
+        rn = int((q.get("rn") or ["0"])[0])
+        stalls = 0
+        dead = False
+        while pos <= end:
+            window = min(1 << 19 if first else 4 << 20, end - pos + 1)
+            wstart, wend = pos, pos + window - 1
+            try:
+                with _SHARED._lock:
+                    furl = _sabr_query_edit(url, f"{wstart}-{wend}", rn + 1)
+                    rn += 1
+                    data = _in_page_fetch(sb, furl)
+                got = _extract_media(data)
+            except Exception as e:
+                stalls += 1
+                if _looks_like_dead_browser(e):
+                    dead = True
+                    break
+                if stalls >= 4:
+                    break
+                time.sleep(1.2)
+                continue
+            if not got:
+                stalls += 1
+                if stalls >= 4:
+                    break
+                time.sleep(1.0)
+                continue
+            stalls = 0
+            want = wend - wstart + 1
+            take = bytes(got[:want])
+            yield take
+            pos += len(take)
+            first = False
+            if progress:
+                progress(pos)
+        if pos > end:
+            return
+        # stale/dead -> fresh playback session, resume where we stopped
+        pot_invalidate(video_id)
+        if dead:
+            try:
+                _SHARED.invalidate()   # brand-new Chrome next acquire
+            except Exception:
+                pass
+        if attempt == 0:
+            start = pos
+            continue
+    return

@@ -20,11 +20,14 @@ blueprint still included as an alternative.
 - **Search** YouTube Music (songs / videos / albums / all chips) — the top
   results are **pre-downloaded in the background** while you browse, so
   tapping play is usually **instant**
-- **Tap a result to play** — cached songs start instantly (seekable 206);
-  a song that isn't cached yet auto-downloads first (~1min, one time) and
-  every play after that is instant from cache
-- **⤓ button** downloads with a live % progress; when done it becomes a
-  green **save** link (and the song is pushed to Telegram if configured)
+- **Tap a result to play** — three instant paths, chosen by one tiny
+  `/play/{id}` JSON call: cached mp4 (instant + seekable), an already
+  running download (play when it lands, seconds), or the **instant SABR
+  stream** (clean audio through the trusted-PO-token browser session —
+  starts in ~1-2s even for never-played songs; a completed play also
+  caches the song for instant replays)
+- **⤓ button** = the direct download URL — the browser fetches the full
+  tagged mp4 straight from `/dl/{videoId}`
 - Sticky player bar: play/pause, seek, elapsed/total
 - Header status dot: green = logged-in cookies OK, amber = no cookies,
   red = server offline
@@ -33,10 +36,12 @@ blueprint still included as an alternative.
 
 | Method | Path | What it does |
 |--------|------|--------------|
-| GET  | `/health` | liveness + cookie / telegram status |
+| GET  | `/health` | liveness + cookie / telegram status + cache count |
 | GET  | `/search?q=...&filter=songs&limit=20` | YT Music search (all / songs / videos / albums / artists / playlists) |
 | GET  | `/track/{videoId}` | resolve streams + metadata (no download) |
-| GET  | `/stream/{videoId}` | audio: cached mp4 (instant, seekable) first, else 302/proxy. `?mint=1` = JSON api for the web UI (cached url / 202) |
+| GET  | `/play/{videoId}` | one-shot JSON meta for players: `file` / `downloading` (+ `statusUrl`) / `stream` — tells you the fastest instant path |
+| GET  | `/stream/{videoId}` | audio: cached mp4 first, else instant SABR pump (exact Content-Length, Range/seek supported), else plain-url proxy. `?mint=1` = the `/play` JSON. `?redirect=1` = 302 to a plain url |
+| GET  | `/dl/{videoId}` | **direct wget-able download** — full tagged mp4 (waits a few seconds if not cached yet). `?fmt=mp3` = 320 kbps mp3 with embedded cover art |
 | POST | `/downloads/{videoId}?quality=best` | start async download → `{"downloadId", "statusUrl"}` |
 | GET  | `/downloads/{dlId}` | progress: status, bytes, errors, mp4 info |
 | GET  | `/downloads/file/{dlId}` | fetch the finished mp4 |
@@ -46,6 +51,24 @@ blueprint still included as an alternative.
 | GET  | `/telegram` · `/telegram/test` | status / send a test song-less message |
 
 Interactive docs at `/docs` (Swagger) once the server is running.
+
+## Direct download one-liners (wget / curl)
+
+```bash
+BASE=https://music.example.invalid   # your tunnel host
+
+# grab a videoId
+VID=$(curl -s "$BASE/search?q=kesariya&limit=1" | jq -r .results[0].videoId)
+
+# full song as tagged mp4 (cover art embedded)
+wget -O "song.mp4" "$BASE/dl/$VID"
+
+# or as 320 kbps mp3 (also cover-art tagged)
+wget -O "song.mp3" "$BASE/dl/$VID?fmt=mp3"
+
+# stream for players that want a plain URL (mpv, vlc, ...)
+mpv "$BASE/stream/$VID"
+```
 
 ## Download pipeline (how it beats bot-walls)
 
@@ -62,7 +85,8 @@ Interactive docs at `/docs` (Swagger) once the server is running.
 
 The raw audio is muxed to mp4 with ffmpeg, the cover art is embedded, the
 duration is sanity-checked, and the result is pushed to Telegram (if
-configured) in a background thread.
+configured) in a background thread. `?fmt=mp3` runs a second fast pass
+(libmp3lame 320 kbps + ID3v2.3 art) on the finished file and caches it.
 
 ---
 
