@@ -52,6 +52,11 @@ jobs:
 
       - name: Install engine deps + Chrome
         run: |
+          # ffmpeg is REQUIRED for the mp4 mux/cover-art step (runner images
+          # may ship without it -> every download died with FileNotFoundError)
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          which ffmpeg && ffmpeg -version | head -1
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python scripts/install_cft_chrome.py
