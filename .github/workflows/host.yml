@@ -89,10 +89,12 @@ jobs:
           export TELEGRAM_CHAT_ID="${{ secrets.TG_CHAT_ID }}"
           nohup python run.py > api.log 2>&1 &
           OK=""
+          # NOTE: steps run under `bash -e`; guard every probe curl so a
+          # connection-refused (exit 7) during boot doesn't kill the step
           for i in $(seq 1 120); do
-            C=$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost:$ORIGIN_PORT/health" 2>/dev/null)
+            C=$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost:$ORIGIN_PORT/health" 2>/dev/null || true)
             [ "$C" = "200" ] && OK=tls && break
-            C=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$ORIGIN_PORT/health" 2>/dev/null)
+            C=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$ORIGIN_PORT/health" 2>/dev/null || true)
             [ "$C" = "200" ] && OK=plain && break
             sleep 2
           done
