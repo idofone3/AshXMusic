@@ -8,17 +8,21 @@ cover art**; optional **Telegram auto-push** for finished songs.
 Ships with a **minimal dark web UI** (phone-friendly) on the homepage:
 search → tap to play → download with live progress → save the mp4.
 
-One-click deployable to **Render (free tier)** — no disks, no paid features.
+**Hosted 24/7 on GitHub Actions runners, exposed worldwide through your own
+Cloudflare Tunnel** (`host.yml` workflow — cookies preinitialised from
+secrets, self-chaining every ~5.5h, never hits the 6h job limit). Render
+blueprint still included as an alternative.
 
 ---
 
 ## Web UI (homepage `/`)
 
-- **Search** YouTube Music (songs / videos / albums / all chips)
-- **Tap a result to play** — instant when a plain stream url exists or the
-  song is already cached; on bot-walled networks the UI automatically falls
-  back to downloading the song first (~30-60s) and then plays the finished
-  mp4 (fully seekable). Repeat plays of the same song are instant (cache).
+- **Search** YouTube Music (songs / videos / albums / all chips) — the top
+  results are **pre-downloaded in the background** while you browse, so
+  tapping play is usually **instant**
+- **Tap a result to play** — cached songs start instantly (seekable 206);
+  a song that isn't cached yet auto-downloads first (~1min, one time) and
+  every play after that is instant from cache
 - **⤓ button** downloads with a live % progress; when done it becomes a
   green **save** link (and the song is pushed to Telegram if configured)
 - Sticky player bar: play/pause, seek, elapsed/total
@@ -32,7 +36,7 @@ One-click deployable to **Render (free tier)** — no disks, no paid features.
 | GET  | `/health` | liveness + cookie / telegram status |
 | GET  | `/search?q=...&filter=songs&limit=20` | YT Music search (all / songs / videos / albums / artists / playlists) |
 | GET  | `/track/{videoId}` | resolve streams + metadata (no download) |
-| GET  | `/stream/{videoId}` | audio for playback: cached mp4 first, else 302/proxy to googlevideo |
+| GET  | `/stream/{videoId}` | audio: cached mp4 (instant, seekable) first, else 302/proxy. `?mint=1` = JSON api for the web UI (cached url / 202) |
 | POST | `/downloads/{videoId}?quality=best` | start async download → `{"downloadId", "statusUrl"}` |
 | GET  | `/downloads/{dlId}` | progress: status, bytes, errors, mp4 info |
 | GET  | `/downloads/file/{dlId}` | fetch the finished mp4 |
@@ -90,7 +94,33 @@ Without it, search still works but logged-in-only tracks won't resolve.
 Cookies expire occasionally (weeks/months) — if the UI dot turns amber or
 logged-in tracks stop resolving, re-export and update `COOKIES_B64`.
 
-## Deploy on Render (free tier — blueprint)
+## Host on GitHub Actions (free, via your Cloudflare Tunnel)
+
+`.github/workflows/host.yml` turns the repo into a self-hosting machine:
+
+1. **Secrets** (Settings → Secrets and variables → Actions) — all already
+   set for this repo:
+   - `COOKIES_B64` — `base64 -w0 cookies.txt` output
+   - `TUNNEL_TOKEN` — Zero Trust → Networks → Tunnels → your tunnel →
+     "Install and run a connector" → copy the `eyJ...` service token
+   - `TG_BOT_TOKEN` / `TG_CHAT_ID` — optional Telegram auto-push
+2. **Public hostname**: Zero Trust → tunnel → Public Hostname → Service =
+   `HTTPS://localhost:8080` (the workflow generates a self-signed cert and
+   trusts it in the runner's CA store automatically).
+3. **Run**: Actions → *host* → **Run workflow**. The runner installs deps +
+   Chrome + ffmpeg, restores cookies, serves `https://localhost:8080` over
+   TLS and connects `cloudflared` — your hostname is live worldwide.
+4. **Self-chaining**: a watchdog dispatches a fresh run before GitHub's 6h
+   job ceiling (~5.5h cycles, near-zero gap); a 6h cron is the safety net.
+   Redeploy = cancel the running job, then Run workflow again.
+
+Why songs are pre-downloaded instead of streamed directly: Google
+throttles/bot-walls media byte fetches from datacenter IPs, and SABR urls
+are UMP-framed (unplayable by plain `<audio>`). The API therefore
+pre-downloads search results (fast in-browser SABR) and plays from its
+seekable cache — that's what makes playback instant.
+
+## Deploy on Render (free tier — alternative)
 
 The repo ships `render.yaml` + `Dockerfile` (Render Blueprint).
 
