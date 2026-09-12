@@ -8,7 +8,7 @@ result whose title/artist match the keywords and passes the remix filter.
 # words that mark covers / remixes / unofficial edits — never autoplay them
 BADWORDS = (
     "remix", "lofi", "lo-fi", "slowed", "reverb", "cover", "instrumental",
-    "karaoke", "nightcore", "8d", "sped up", "reprise", "acoustic",
+    "karaoke", "nightcore", "8d", "sped up", "reprise", "acoustic", "jhankar",
     "encore", "unplugged", "live", "chirantan", "lyrical video",
 )
 

@@ -19,8 +19,9 @@ class TgBot(threading.Thread):
     def __init__(self, station):
         super().__init__(daemon=True)
         self.station = station
-        self.repo_dir = os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__)))
+        # radio/bot/bot.py -> repo root
+        self.repo_dir = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
         self.api = TelegramAPI(env_token())
         self.control = env_control()
         self.panel = NowPlayingPanel(self, self.control)
