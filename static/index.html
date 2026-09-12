@@ -161,18 +161,17 @@ async function play(vid){
   document.querySelectorAll(".row").forEach(r=>r.classList.toggle("act",r.dataset.v===vid));
   $("pt").textContent=title;$("pa").textContent=artist;
   $("pl").classList.add("up");$("pb").textContent="…";
-  // instant path: ask the server for a ready-to-play url (cached mp4 or
-  // prewarmed googlevideo link). 202 = minting in background -> poll.
+  // instant path: cached songs return their url immediately; anything new
+  // starts a download server-side (deduped) and we play the finished mp4.
   try{
-    for(let i=0;i<40;i++){
-      const r=await fetch(`/stream/${vid}?mint=1`);
-      if(r.ok){
-        const d=await r.json();
-        if(d.url){au.src=d.url;au.play().catch(()=>{});return;}
-      }
-      if(r.status!==202)break;
-      await new Promise(z=>setTimeout(z,2200));
-      if(cur!==vid)return;                 // user switched tracks
+    const r=await fetch(`/stream/${vid}?mint=1`);
+    if(r.ok){
+      const d=await r.json();
+      if(d.url){au.src=d.url;au.play().catch(()=>{});return;}
+    }
+    if(r.status===202){
+      toast("Preparing song — first play downloads (~1min), then it's instant forever…");
+      playViaDownload(vid);return;
     }
   }catch(e){}
   au.src=`/stream/${vid}?redirect=1`;

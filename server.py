@@ -110,23 +110,11 @@ def _mint_innertube() -> Innertube:
 
 
 def _mint_sync(video_id: str, quality: str) -> dict:
-    """Rung 1: capture the pot-carrying videoplayback url from a real SABR
-    playback session in the shared browser (works on datacenter IPs — same
-    machinery as the download tier; the CLIENT then streams the bytes from
-    its own IP, so googlevideo sees a residential connection).
-    Rung 2: innertube player API (dedicated lock-free session).
-    Rung 3: full resolve ladder."""
-    try:
-        from ytm import fastdl
-        r = fastdl.sabr_playback_url(video_id, engine._cookie_raw, max_wait=18)
-        if r.get("url"):
-            return {"url": r["url"],
-                    "stream": {"mimeType": r.get("mime") or "audio/mp4",
-                               "container": "m4a"},
-                    "track": r.get("track") or {},
-                    "source": "sabr-capture"}
-    except Exception:
-        pass
+    """Rung 1: innertube player API (dedicated lock-free session).
+    Rung 2: full resolve ladder. NOTE: SABR-captured playback urls are
+    UMP-framed (application/vnd.yt-ump) and unplayable by plain <audio> —
+    never hand those to clients; for instant playback we pre-DOWNLOAD
+    search results instead (see _prewarm_top)."""
     try:
         it = _mint_innertube()
         pr, client, streams = it.player(video_id)
@@ -139,12 +127,52 @@ def _mint_sync(video_id: str, quality: str) -> dict:
                         "source": client}
     except Exception:
         pass
-    # rung 3: full ladder (innertube -> browser player -> browser legacy)
     info = engine.direct_url(video_id, quality)
     s = info["stream"]
     return {"url": s["url"],
             "stream": {k: v for k, v in s.items() if k != "url"},
             "track": info["track"], "source": info["source"]}
+
+
+_ACTIVE_STATES = ("queued", "resolving", "sabr", "downloading",
+                  "capturing", "processing", "sending")
+
+
+def _active_download(video_id: str) -> Optional[str]:
+    for d in engine.downloads.values():
+        if d.get("videoId") == video_id and d.get("status") in _ACTIVE_STATES:
+            return d["id"]
+    return None
+
+
+def _prewarm_download(video_id: str) -> Optional[str]:
+    """Guarantee a download is running (or finished) for video_id.
+    Returns the download id or None when already cached."""
+    if engine.cached_file(video_id):
+        return None
+    return _active_download(video_id) or engine.start_download(video_id, "best")
+
+
+def _prewarm_top(results: list):
+    """Background-download the top search results -> by the time the user
+    taps play the song is cached and playback is INSTANT (206 seekable)."""
+    vids = [r.get("videoId") for r in results if r.get("videoId")][:3]
+
+    def _run():
+        for vid in vids:
+            if _active_download(vid) or engine.cached_file(vid):
+                continue
+            busy = sum(1 for d in engine.downloads.values()
+                       if d.get("status") in _ACTIVE_STATES)
+            if busy >= 2:
+                return
+            try:
+                engine.start_download(vid, "best")
+                print(f"[prewarm] downloading {vid}", flush=True)
+            except Exception as e:
+                print(f"[prewarm] {vid}: {str(e)[:80]}", flush=True)
+            time.sleep(3)
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _mint_bg_start(video_id: str, budget: float = 110.0) -> bool:
@@ -280,10 +308,8 @@ def search(q: str = Query(..., min_length=1),
         results = engine.search(q, flt=filter, limit=limit)
     except Exception as e:
         raise HTTPException(502, str(e))
-    # pre-mint stream urls in the background -> first play is instant
-    vids = [r.get("videoId") for r in results if r.get("videoId")][:10]
-    if vids:
-        _prewarm_mints(vids)
+    # pre-download top results in the background -> first tap = instant
+    _prewarm_top(results)
     return {"query": q, "filter": filter, "results": results}
 
 
@@ -320,13 +346,14 @@ def stream(video_id: str, quality: str = "best", itag: Optional[str] = None,
         cached = engine.cached_file(video_id)
         if cached:
             return {"url": f"/stream/{video_id}", "cached": True}
-        m = _mint_get(video_id)
-        if m:
-            return {"url": m["url"], "source": m.get("source"),
-                    "track": m.get("track"), "cached": False,
-                    "expiresIn": int(MINT_TTL - (time.time() - m["ts"]))}
-        _mint_bg_start(video_id)
-        return JSONResponse(status_code=202, content={"minting": True})
+        # instant-play guarantee: start (or join) the download now — the UI
+        # polls /downloads/{id} and plays the finished, seekable mp4
+        try:
+            _prewarm_download(video_id)
+        except Exception:
+            pass
+        return JSONResponse(status_code=202,
+                            content={"minting": True, "downloading": True})
     if not itag:
         cached = engine.cached_file(video_id)
         if cached:

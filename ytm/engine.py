@@ -245,6 +245,13 @@ class Engine:
 
     def start_download(self, video_id: str, quality: str = "best",
                        notify_chat: Optional[int] = None) -> str:
+        # dedupe: join an in-flight download of the same video instead of
+        # spawning a duplicate worker (prewarm + user tap race)
+        for d in self.downloads.values():
+            if (d.get("videoId") == video_id and d.get("status")
+                    in ("queued", "resolving", "sabr", "downloading",
+                        "capturing", "processing", "sending")):
+                return d["id"]
         dl_id = uuid.uuid4().hex[:12]
         self.downloads[dl_id] = {
             "id": dl_id, "videoId": video_id, "status": "queued",
