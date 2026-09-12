@@ -153,7 +153,7 @@ $("list").addEventListener("click",e=>{
   if(row) play(row.dataset.v);
 });
 
-function play(vid){
+async function play(vid){
   const row=document.getElementById("r-"+vid);
   const title=(row?row.querySelector(".t").textContent:vid);
   const artist=(row?row.querySelector(".s").textContent:"");
@@ -161,18 +161,33 @@ function play(vid){
   document.querySelectorAll(".row").forEach(r=>r.classList.toggle("act",r.dataset.v===vid));
   $("pt").textContent=title;$("pa").textContent=artist;
   $("pl").classList.add("up");$("pb").textContent="…";
+  // instant path: ask the server for a ready-to-play url (cached mp4 or
+  // prewarmed googlevideo link). 202 = minting in background -> poll.
+  try{
+    for(let i=0;i<40;i++){
+      const r=await fetch(`/stream/${vid}?mint=1`);
+      if(r.ok){
+        const d=await r.json();
+        if(d.url){au.src=d.url;au.play().catch(()=>{});return;}
+      }
+      if(r.status!==202)break;
+      await new Promise(z=>setTimeout(z,2200));
+      if(cur!==vid)return;                 // user switched tracks
+    }
+  }catch(e){}
   au.src=`/stream/${vid}?redirect=1`;
   au.play().catch(()=>{});
 }
 au.addEventListener("error",()=>{
   if(!cur||!au.src)return;
   ladder++;
-  if(ladder===1&&au.src.includes("redirect=1")){
+  if(ladder===1){
+    // minted/cached url failed -> try server proxy once
     au.src=`/stream/${cur}`;au.play().catch(()=>{});return;
   }
   if(ladder===2){
     // no plain stream (bot-walled network) — download, then play the file
-    toast("Live stream blocked on this network — downloading first (~30s)…");
+    toast("Stream blocked — downloading first (~1min)…");
     playViaDownload(cur);return;
   }
   $("pb").textContent="▶";toast("Playback unavailable");

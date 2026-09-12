@@ -23,7 +23,8 @@ from typing import Optional
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
+                               StreamingResponse)
 from pydantic import BaseModel
 
 from ytm.engine import Engine, YTApiError
@@ -117,25 +118,51 @@ def _mint_sync(video_id: str, quality: str) -> dict:
             "track": info["track"], "source": info["source"]}
 
 
+def _mint_bg_start(video_id: str, budget: float = 75.0) -> bool:
+    """Kick off a background mint for one video (False if already running
+    or already cached). Never blocks the caller."""
+    if _mint_get(video_id):
+        return False
+    with _MINT_LOCK:
+        if video_id in _MINT_BUSY:
+            return False
+        _MINT_BUSY.add(video_id)
+
+    def _run():
+        try:
+            _mint_put(video_id, _mint_one(video_id, "best", budget=budget))
+            print(f"[mint] ready {video_id}", flush=True)
+        except Exception as e:
+            print(f"[mint] failed {video_id}: {str(e)[:100]}", flush=True)
+        finally:
+            with _MINT_LOCK:
+                _MINT_BUSY.discard(video_id)
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 def _prewarm_mints(video_ids: list):
     """Background-mint urls for fresh search results so the first tap on
     play is instant (302 straight to googlevideo). Opportunistic: skipped
     while a download is running (shared browser serves downloads first)."""
     def _run():
         for vid in video_ids[:6]:
+            waited = 0
+            # wait out active downloads instead of dropping the prewarm
+            while waited < 600 and any(
+                    d.get("status") in ("resolving", "sabr", "downloading",
+                                        "capturing", "processing", "queued")
+                    for d in list(engine.downloads.values())):
+                time.sleep(15)
+                waited += 15
             if _mint_get(vid) or not vid:
                 continue
-            if any(d.get("status") in ("resolving", "sabr", "downloading",
-                                       "capturing", "processing", "queued")
-                   for d in list(engine.downloads.values())):
-                print("[mint] prewarm paused: download in progress", flush=True)
-                return
             with _MINT_LOCK:
                 if vid in _MINT_BUSY:
                     continue
                 _MINT_BUSY.add(vid)
             try:
-                _mint_put(vid, _mint_one(vid, "best", budget=60.0))
+                _mint_put(vid, _mint_one(vid, "best", budget=75.0))
                 print(f"[mint] prewarmed {vid}", flush=True)
             except Exception as e:
                 print(f"[mint] prewarm {vid} failed: {str(e)[:100]}", flush=True)
@@ -250,14 +277,27 @@ def track(video_id: str, quality: str = "best"):
 def stream(video_id: str, quality: str = "best", itag: Optional[str] = None,
            redirect: bool = False, mint: bool = False):
     """Audio for browser playback, fastest path first:
-      0. cached finished mp4 (instant + seekable)
-      1. pre-minted googlevideo url -> 302 (client fetches bytes from its
-         own IP: instant, full speed; ?mint=1 returns the url as JSON)
-      2. mint on demand (innertube API, ~2-5s) -> 302 / ?mint=1
-      3. server-side proxy (only for good networks; fast-fail when the
-         datacenter IP is bot-walled/throttled)
-    When everything fails clients fall back to POST /downloads/{video_id}
-    and play /downloads/file/{dl_id}."""
+      ?mint=1  -> JSON api for the web UI: cached-file url, prewarmed
+                  googlevideo url, or 202 {minting:true} + background mint
+                  (poll again; every response is instant, no blocking).
+      default  -> 0. cached mp4 (instant + seekable)
+                  1. prewarmed url -> 302 (client fetches from its own IP)
+                  2. mint on demand (blocking, 28s) -> 302
+                  3. server proxy (fast-fail when the datacenter IP is
+                     throttled)
+    Clients that still fail should POST /downloads/{video_id} then play
+    /downloads/file/{dlId}."""
+    if mint:
+        cached = engine.cached_file(video_id)
+        if cached:
+            return {"url": f"/stream/{video_id}", "cached": True}
+        m = _mint_get(video_id)
+        if m:
+            return {"url": m["url"], "source": m.get("source"),
+                    "track": m.get("track"), "cached": False,
+                    "expiresIn": int(MINT_TTL - (time.time() - m["ts"]))}
+        _mint_bg_start(video_id)
+        return JSONResponse(status_code=202, content={"minting": True})
     if not itag:
         cached = engine.cached_file(video_id)
         if cached:
@@ -273,10 +313,6 @@ def stream(video_id: str, quality: str = "best", itag: Optional[str] = None,
                     502, f"no stream url: {str(e)[:140]} - "
                          f"use POST /downloads/{video_id} then "
                          f"/downloads/file/{{dlId}}")
-        if mint:
-            return {"url": m["url"], "source": m.get("source"),
-                    "track": m.get("track"),
-                    "expiresIn": int(MINT_TTL - (time.time() - m["ts"]))}
         if redirect:
             return RedirectResponse(m["url"])
         try:
