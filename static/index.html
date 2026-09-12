@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0c10">
+<title>AshXMusic</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237c5cff'/%3E%3Cpath d='M26 20l20 12-20 12z' fill='white'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#0a0c10; --card:#12151d; --card2:#171b25; --line:#1e2430;
+  --tx:#e9ecf4; --dim:#8b92a5; --acc:#7c5cff; --acc2:#9d85ff;
+  --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --r:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{background:var(--bg);color:var(--tx);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;padding-bottom:calc(84px + env(safe-area-inset-bottom))}
+header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:10px;padding:14px 18px;background:rgba(10,12,16,.82);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--acc),#4f34d8);display:grid;place-items:center;flex:none}
+.logo svg{width:18px;height:18px;fill:#fff}
+h1{font-size:18px;font-weight:700;letter-spacing:.2px}
+h1 span{color:var(--acc2)}
+.status{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--warn)}
+.dot.ok{background:var(--ok)} .dot.bad{background:var(--err)}
+.wrap{max-width:680px;margin:0 auto;padding:18px 14px}
+.searchrow{display:flex;gap:8px}
+#q{flex:1;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 15px;color:var(--tx);font-size:15.5px;outline:none;transition:border .15s}
+#q:focus{border-color:var(--acc)}
+#q::placeholder{color:var(--dim)}
+#go{border:0;border-radius:12px;background:var(--acc);color:#fff;font-weight:600;font-size:15px;padding:0 20px;cursor:pointer}
+#go:active{transform:scale(.97)}
+.chips{display:flex;gap:8px;margin:12px 2px 16px;flex-wrap:wrap}
+.chip{background:var(--card);border:1px solid var(--line);color:var(--dim);border-radius:999px;padding:7px 14px;font-size:13px;cursor:pointer;transition:.15s}
+.chip.on{background:rgba(124,92,255,.16);border-color:var(--acc);color:var(--acc2)}
+.row{display:flex;align-items:center;gap:12px;padding:9px 10px;border-radius:var(--r);cursor:pointer;transition:background .15s}
+.row:hover,.row.act{background:var(--card)}
+.row.act .t{color:var(--acc2)}
+.row img{width:50px;height:50px;border-radius:9px;object-fit:cover;background:var(--card2);flex:none}
+.meta{flex:1;min-width:0}
+.t{font-weight:600;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s{font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.btn{width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--card2);color:var(--tx);font-size:15px;display:grid;place-items:center;cursor:pointer;flex:none;transition:.15s}
+.btn:active{transform:scale(.92)}
+.btn.p{background:var(--acc);border-color:var(--acc);color:#fff}
+.btn.done{background:rgba(34,197,94,.14);border-color:rgba(34,197,94,.4);color:var(--ok)}
+.btn[disabled]{opacity:.45}
+.pctl{position:relative;overflow:hidden}
+.pbar{position:absolute;left:0;bottom:0;height:3px;background:var(--acc);width:0%;transition:width .4s}
+.hint{color:var(--dim);text-align:center;padding:44px 20px;font-size:14px}
+.hint b{color:var(--tx)}
+.spin{width:26px;height:26px;border:3px solid var(--line);border-top-color:var(--acc);border-radius:50%;margin:40px auto;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.toast{position:fixed;left:50%;bottom:calc(100px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);background:#1c2030;border:1px solid var(--line);color:var(--tx);padding:10px 16px;border-radius:10px;font-size:13.5px;opacity:0;pointer-events:none;transition:.25s;z-index:30;max-width:88vw;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%)}
+.player{position:fixed;left:0;right:0;bottom:0;z-index:20;background:rgba(14,16,23,.94);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:10px 16px calc(10px + env(safe-area-inset-bottom));transform:translateY(110%);transition:transform .28s}
+.player.up{transform:none}
+.prow{display:flex;align-items:center;gap:12px;max-width:680px;margin:0 auto}
+.pinfo{flex:1;min-width:0}
+.pt{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pa{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#seek{width:100%;height:4px;margin-top:8px;-webkit-appearance:none;appearance:none;background:var(--line);border-radius:2px;outline:none;cursor:pointer}
+#seek::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--acc)}
+#seek::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;background:var(--acc)}
+.time{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;margin-top:4px;display:flex;justify-content:space-between}
+#pb{width:44px;height:44px;border-radius:50%;border:0;background:var(--acc);color:#fff;font-size:17px;display:grid;place-items:center;cursor:pointer;flex:none}
+a.dl{color:var(--ok);text-decoration:none;font-weight:600;font-size:12.5px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+  <h1>Ash<span>X</span>Music</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="stx">connecting</span></div>
+</header>
+
+<div class="wrap">
+  <form class="row searchrow" id="sf" style="display:flex">
+    <input id="q" type="search" placeholder="Search songs, artists…" autocomplete="off" enterkeyhint="search">
+    <button id="go" type="submit">Go</button>
+  </form>
+  <div class="chips" id="chips">
+    <button class="chip on" data-f="songs" type="button">Songs</button>
+    <button class="chip" data-f="videos" type="button">Videos</button>
+    <button class="chip" data-f="albums" type="button">Albums</button>
+    <button class="chip" data-f="all" type="button">All</button>
+  </div>
+  <div id="list"><div class="hint">Search YouTube Music and <b>tap a result to play</b> —<br>download straight to mp4 (cover art embedded) or get it sent to your Telegram.</div></div>
+</div>
+
+<div class="player" id="pl">
+  <div class="prow">
+    <button id="pb" aria-label="play/pause" type="button">▶</button>
+    <div class="pinfo">
+      <div class="pt" id="pt">—</div>
+      <div class="pa" id="pa"></div>
+      <input id="seek" type="range" min="0" max="1000" value="0">
+      <div class="time"><span id="t1">0:00</span><span id="t2">0:00</span></div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<audio id="au" preload="none"></audio>
+
+<script>
+const $=id=>document.getElementById(id), au=$("au");
+let filter="songs", cur=null, polled={}, seeking=false, pendingPlay=null, ladder=0;
+
+function toast(m){const t=$("toast");t.textContent=m;t.classList.add("show");clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("show"),2600);}
+function fmt(s){s=Math.max(0,Math.floor(s||0));return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
+function esc(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+
+fetch("/health").then(r=>r.json()).then(h=>{
+  const ok=h.ok && h.cookie && h.cookie.logged_in;
+  $("dot").className="dot "+(h.ok?(ok?"ok":""):"bad");
+  $("stx").textContent=h.ok?(ok?"ready · logged in":"ready · no cookies"):"offline";
+  if(h.ok && !ok) toast("No cookies set — add COOKIES_B64 on the server for full library access");
+}).catch(()=>{$("dot").className="dot bad";$("stx").textContent="offline";});
+
+$("sf").addEventListener("submit",e=>{e.preventDefault();search($("q").value.trim());});
+$("chips").addEventListener("click",e=>{
+  const b=e.target.closest(".chip");if(!b)return;
+  document.querySelectorAll(".chip").forEach(c=>c.classList.toggle("on",c===b));
+  filter=b.dataset.f;
+  if($("q").value.trim()) search($("q").value.trim());
+});
+
+async function search(q){
+  if(!q)return;
+  $("list").innerHTML='<div class="spin"></div>';
+  try{
+    const r=await fetch(`/search?q=${encodeURIComponent(q)}&filter=${filter}&limit=25`);
+    const d=await r.json();
+    const rs=(d.results||[]).filter(x=>x.videoId);
+    if(!rs.length){$("list").innerHTML='<div class="hint">No results for <b>'+esc(q)+'</b></div>';return;}
+    $("list").innerHTML=rs.map(t=>`
+      <div class="row" id="r-${t.videoId}" data-v="${t.videoId}">
+        <img src="${esc(t.thumbnail||"")}" loading="lazy" onerror="this.style.visibility='hidden'">
+        <div class="meta"><div class="t">${esc(t.title)}</div>
+        <div class="s">${esc(t.artist||"")}${t.duration?" · "+esc(t.duration):""}</div></div>
+        <button class="btn p" data-play="${t.videoId}" type="button">▶<i class="pbar" id="pb-${t.videoId}"></i></button>
+        <button class="btn" data-dl="${t.videoId}" title="download mp4" type="button">⤓</button>
+      </div>`).join("");
+  }catch(e){$("list").innerHTML='<div class="hint">Search failed — is the server awake?</div>';}
+}
+
+$("list").addEventListener("click",e=>{
+  const dl=e.target.closest("[data-dl]");
+  if(dl){startDl(dl.dataset.dl,dl);return;}
+  const p=e.target.closest("[data-play]");
+  if(p){play(p.dataset.play);return;}
+  const row=e.target.closest(".row");
+  if(row) play(row.dataset.v);
+});
+
+function play(vid){
+  const row=document.getElementById("r-"+vid);
+  const title=(row?row.querySelector(".t").textContent:vid);
+  const artist=(row?row.querySelector(".s").textContent:"");
+  cur=vid;ladder=0;pendingPlay=null;
+  document.querySelectorAll(".row").forEach(r=>r.classList.toggle("act",r.dataset.v===vid));
+  $("pt").textContent=title;$("pa").textContent=artist;
+  $("pl").classList.add("up");$("pb").textContent="…";
+  au.src=`/stream/${vid}?redirect=1`;
+  au.play().catch(()=>{});
+}
+au.addEventListener("error",()=>{
+  if(!cur||!au.src)return;
+  ladder++;
+  if(ladder===1&&au.src.includes("redirect=1")){
+    au.src=`/stream/${cur}`;au.play().catch(()=>{});return;
+  }
+  if(ladder===2){
+    // no plain stream (bot-walled network) — download, then play the file
+    toast("Live stream blocked on this network — downloading first (~30s)…");
+    playViaDownload(cur);return;
+  }
+  $("pb").textContent="▶";toast("Playback unavailable");
+});
+function playViaDownload(vid){
+  const row=document.getElementById("r-"+vid);
+  const btn=row?row.querySelector("[data-dl]"):null;
+  pendingPlay=vid;$("pb").textContent="…";
+  if(polled[vid]){ // poller may already be running (or finished)
+    fetch(`/downloads/${polled[vid]}`).then(r=>r.json()).then(st=>{
+      if(st.status==="done")playFile(polled[vid]);
+      else if(btn&&btn.disabled)playFileWhenReady(vid);
+      else startDl(vid,btn||synthBtn(vid));
+    }).catch(()=>{pendingPlay=null;$("pb").textContent="▶";});
+  } else startDl(vid,btn||synthBtn(vid));
+}
+function synthBtn(vid){ // download with no visible row (player-only)
+  const b=document.createElement("button");b.style.display="none";document.body.appendChild(b);
+  startDl(vid,b);return b;
+}
+function playFileWhenReady(vid){
+  const h=setInterval(async()=>{
+    try{const st=await(await fetch(`/downloads/${polled[vid]}`)).json();
+      if(st.status==="done"){clearInterval(h);playFile(polled[vid]);}
+      else if(st.status==="error"){clearInterval(h);pendingPlay=null;$("pb").textContent="▶";}
+    }catch(e){}
+  },2500);
+}
+function playFile(id){
+  pendingPlay=null;
+  au.src=`/downloads/file/${id}`;
+  au.play().then(()=>{$("pb").textContent="⏸";}).catch(()=>{});
+}
+au.addEventListener("playing",()=>{$("pb").textContent="⏸";});
+au.addEventListener("pause",()=>{if(cur)$("pb").textContent="▶";});
+$("pb").addEventListener("click",()=>{if(!au.src)return;au.paused?au.play():au.pause();});
+au.addEventListener("timeupdate",()=>{
+  if(!seeking&&au.duration){$("seek").value=Math.round(au.currentTime/au.duration*1000);}
+  $("t1").textContent=fmt(au.currentTime);
+  if(au.duration)$("t2").textContent=fmt(au.duration);
+});
+$("seek").addEventListener("input",()=>{seeking=true;});
+$("seek").addEventListener("change",()=>{if(au.duration)au.currentTime=$("seek").value/1000*au.duration;seeking=false;});
+
+async function startDl(vid,btn){
+  if(polled[vid])return;
+  btn.disabled=true;btn.textContent="…";
+  try{
+    const r=await fetch(`/downloads/${vid}`,{method:"POST"});
+    if(!r.ok)throw 0;
+    const j=await r.json();
+    polled[vid]=j.downloadId;poll(vid,btn);
+  }catch(e){btn.disabled=false;btn.textContent="⤓";toast("Download request failed");}
+}
+function poll(vid,btn){
+  const id=polled[vid],bar=$("pb-"+vid);
+  const h=setInterval(async()=>{
+    try{
+      const st=await (await fetch(`/downloads/${id}`)).json();
+      const pct=st.bytesTotal?Math.round(st.bytesDone/st.bytesTotal*100):0;
+      if(st.status==="downloading"){btn.textContent=pct+"%";if(bar)bar.style.width=pct+"%";}
+      else if(st.status==="done"){
+        clearInterval(h);btn.className="btn done";
+        btn.innerHTML='<a class="dl" href="/downloads/file/'+id+'" download>save</a>';
+        if(bar)bar.style.width="100%";
+        const tg=st.telegram||{};
+        toast(tg.via==="sent"?"Saved + sent to Telegram ✓":"Ready — tap save ✓");
+        if(pendingPlay===vid)playFile(id);
+      }else if(st.status==="error"){clearInterval(h);btn.disabled=false;btn.textContent="⤓";toast("Download failed: "+(st.error||"").slice(0,80));
+        if(pendingPlay===vid){pendingPlay=null;$("pb").textContent="▶";}}
+    }catch(e){}
+  },2500);
+}
+</script>
+</body>
+</html>

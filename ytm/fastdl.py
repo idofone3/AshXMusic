@@ -476,6 +476,72 @@ def sabr_download_via_browser(video_id: str, raw_cookie: str,
     raise last
 
 
+def sabr_playback_url(video_id: str, raw_cookie: str,
+                      max_wait: int = 18) -> dict:
+    """Streaming companion to _sabr_once: play the song in the shared
+    browser just long enough to capture its pot-carrying videoplayback
+    url, pause, and hand the url back — a browser <audio> tag can stream
+    that url directly (googlevideo honours HTTP Range, so seeking works).
+    No bytes are pulled server-side."""
+    from urllib.parse import urlparse, parse_qs, urlencode
+
+    sb = _SHARED.acquire(raw_cookie)
+    with _SHARED._lock:
+        _js_async_long(sb, SABR_HOOK_JS)
+        _js(sb, SABR_PLAY_JS, video_id)
+        deadline = time.time() + max_wait
+        media_url, track = None, None
+        playing_ok, expect_dur, last_state = False, None, None
+        t_start, poll = time.time(), 0
+        while time.time() < deadline:
+            if track is None:
+                try:
+                    d = json.loads(_js(sb, SABR_TRACK_JS) or "{}")
+                    if d.get("title") and (not video_id or
+                                           d.get("videoId") == video_id):
+                        track = d
+                        expect_dur = float(d.get("lengthSeconds") or 0) or None
+                except Exception:
+                    pass
+            try:
+                urls = json.loads(_js_async_long(sb, SABR_URLS_JS) or "[]")
+            except Exception:
+                urls = []
+            if not playing_ok:
+                try:
+                    last_state = _js(sb, SABR_STATE_JS)
+                    playing_ok = (last_state == 1)
+                except Exception:
+                    pass
+                if not playing_ok and time.time() - t_start > 15:
+                    playing_ok = True  # don't brick on stubborn players
+            if playing_ok and expect_dur:
+                media_url = _sabr_pick_media_url(urls, video_id=video_id,
+                                                 expect_dur=expect_dur)
+            if media_url:
+                break
+            poll += 1
+            sb.sleep(0.4 if poll < 25 else 1.0)
+            try:
+                _js(sb, "var p=document.getElementById('movie_player');"
+                        "try{p.playVideo();}catch(e){}")
+            except Exception:
+                pass
+        try:
+            _js(sb, SABR_PAUSE_JS)
+        except Exception:
+            pass
+        if not media_url:
+            raise RuntimeError(f"no media url captured (state={last_state})")
+        # strip per-request framing params -> seekable base stream url
+        q = parse_qs(urlparse(media_url).query)
+        keep = {k: v[0] for k, v in q.items() if k not in ("range", "rn", "rbuf")}
+        url = urlparse(media_url)._replace(query=urlencode(keep)).geturl()
+        return {"url": url, "track": track or {},
+                "mime": (parse_qs(urlparse(media_url).query)
+                         .get("mime") or ["audio/mp4"])[0]}
+
+
 def _sabr_once(video_id: str, raw_cookie: str,
                max_wait: int, chunk_bytes: int,
                progress: Optional[Callable[[int], None]]) -> dict:

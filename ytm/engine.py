@@ -159,6 +159,19 @@ class Engine:
         s = self.pick_stream(r["streams"], quality)
         return {"track": r["track"], "source": r["source"], "stream": s}
 
+    def cached_file(self, video_id: str) -> Optional[str]:
+        """Path of an already-finished mp4 for this video (instant playback
+        for the web UI), or None."""
+        try:
+            for name in os.listdir(self.downloads_dir):
+                if name.endswith(f"[{video_id}].mp4"):
+                    p = os.path.join(self.downloads_dir, name)
+                    if os.path.getsize(p) > 0:
+                        return p
+        except OSError:
+            pass
+        return None
+
     # ------------- download -------------
 
     def _tmp_path(self, tag: str, ext: str) -> str:

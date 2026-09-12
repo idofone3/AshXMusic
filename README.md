@@ -5,9 +5,25 @@ SeleniumBase, **no premade YT download libraries** (InnerTube + SABR
 reverse-engineered from scratch). Every download is an **mp4 with embedded
 cover art**; optional **Telegram auto-push** for finished songs.
 
+Ships with a **minimal dark web UI** (phone-friendly) on the homepage:
+search → tap to play → download with live progress → save the mp4.
+
 One-click deployable to **Render (free tier)** — no disks, no paid features.
 
 ---
+
+## Web UI (homepage `/`)
+
+- **Search** YouTube Music (songs / videos / albums / all chips)
+- **Tap a result to play** — instant when a plain stream url exists or the
+  song is already cached; on bot-walled networks the UI automatically falls
+  back to downloading the song first (~30-60s) and then plays the finished
+  mp4 (fully seekable). Repeat plays of the same song are instant (cache).
+- **⤓ button** downloads with a live % progress; when done it becomes a
+  green **save** link (and the song is pushed to Telegram if configured)
+- Sticky player bar: play/pause, seek, elapsed/total
+- Header status dot: green = logged-in cookies OK, amber = no cookies,
+  red = server offline
 
 ## Endpoints
 
@@ -16,7 +32,7 @@ One-click deployable to **Render (free tier)** — no disks, no paid features.
 | GET  | `/health` | liveness + cookie / telegram status |
 | GET  | `/search?q=...&filter=songs&limit=20` | YT Music search (all / songs / videos / albums / artists / playlists) |
 | GET  | `/track/{videoId}` | resolve streams + metadata (no download) |
-| GET  | `/stream/{videoId}?quality=best&redirect=false` | proxy (or 302 → googlevideo) the audio stream |
+| GET  | `/stream/{videoId}` | audio for playback: cached mp4 first, else 302/proxy to googlevideo |
 | POST | `/downloads/{videoId}?quality=best` | start async download → `{"downloadId", "statusUrl"}` |
 | GET  | `/downloads/{dlId}` | progress: status, bytes, errors, mp4 info |
 | GET  | `/downloads/file/{dlId}` | fetch the finished mp4 |
@@ -58,14 +74,33 @@ python3 run.py                          # http://localhost:8000/docs
 `cookies.txt` (YT Music cookies, Netscape format) is picked up automatically.
 Without it, search still works but logged-in-only tracks won't resolve.
 
+### Getting the cookies (what to enter)
+
+1. Open **music.youtube.com** in Chrome/Firefox and make sure you're
+   **logged in** (the account with your library/likes).
+2. Export the cookies in **Netscape format** — easiest with the extension
+   *"Get cookies.txt LOCALLY"* (Chrome) or *"cookies.txt"* (Firefox) while
+   on music.youtube.com.
+3. The critical cookies are `SID`, `HSID`, `SSID`, `APISID`, `SAPISID`,
+   `__Secure-1PSID`, `__Secure-3PSID` (+ their `__Secure-*PSIDTS` twins).
+   If those are present, you're good.
+4. Locally: save as `cookies.txt` next to `server.py`.
+   On Render: set env var **`COOKIES_B64`** to `base64 -w0 cookies.txt`.
+
+Cookies expire occasionally (weeks/months) — if the UI dot turns amber or
+logged-in tracks stop resolving, re-export and update `COOKIES_B64`.
+
 ## Deploy on Render (free tier — blueprint)
 
 The repo ships `render.yaml` + `Dockerfile` (Render Blueprint).
 
 1. Push this repo to GitHub.
 2. Render dashboard → **New + → Blueprint** → select the repo → **Apply**.
-3. Render builds the Docker image (Xvfb + ffmpeg + Chrome baked in) and
-   starts the API on your free instance. Health check: `/health`.
+3. After it deploys open **Environment** and add `COOKIES_B64` (=
+   `base64 -w0 cookies.txt` output). The service redeploys with cookies —
+   status dot on the homepage turns green.
+4. Optional: `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` to auto-push every
+   downloaded song to your Telegram chat.
 
 ### Environment variables (set in Render → Environment)
 

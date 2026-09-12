@@ -15,6 +15,7 @@ Environment (all optional):
   YTM_NO_TG=1          disable per-download telegram pushes entirely
 """
 import base64
+import concurrent.futures
 import os
 from typing import Optional
 
@@ -29,6 +30,7 @@ from ytm.telegram import get_logger as tg_logger
 BASE = os.path.dirname(os.path.abspath(__file__))
 COOKIE_PATH = os.path.join(BASE, "cookies.txt")
 DOWNLOADS_DIR = os.environ.get("YTM_DL_DIR") or os.path.join(BASE, "downloads")
+STATIC_DIR = os.path.join(BASE, "static")
 
 # ephemeral hosts (Render free tier has no disks): seed cookies from env
 if not os.path.exists(COOKIE_PATH) and os.environ.get("COOKIES_B64"):
@@ -66,6 +68,13 @@ class TelegramBody(BaseModel):
     bot_token: str
     chat_id: str
     enabled: Optional[bool] = True
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    """Minimal dark web UI: search, play, download."""
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"),
+                        media_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/health")
@@ -141,11 +150,29 @@ def track(video_id: str, quality: str = "best"):
 @app.get("/stream/{video_id}")
 def stream(video_id: str, quality: str = "best", itag: Optional[str] = None,
            redirect: bool = False):
-    """Proxy the audio stream (or 302-redirect straight to googlevideo)."""
+    """Audio for browser playback. Order: cached finished mp4 (instant +
+    seekable) -> direct googlevideo url (302 or proxied). On bot-walled
+    networks no plain url may exist -> clients should fall back to
+    POST /downloads/{video_id} then play /downloads/file/{dl_id}."""
+    if not itag:
+        cached = engine.cached_file(video_id)
+        if cached:
+            return FileResponse(cached, media_type="audio/mp4",
+                                filename=os.path.basename(cached))
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        info = engine.direct_url(video_id, quality or "best")
+        fut = ex.submit(engine.direct_url, video_id, quality or "best")
+        try:
+            info = fut.result(timeout=30)
+        except concurrent.futures.TimeoutError:
+            ex.shutdown(wait=False)
+            raise HTTPException(
+                502, "no instant stream on this network - "
+                     "use POST /downloads/{video_id} and play the file")
     except YTApiError as e:
+        ex.shutdown(wait=False)
         raise HTTPException(502, str(e))
+    ex.shutdown(wait=False)
     s = info["stream"]
     if itag:
         r = engine.resolve(video_id)
