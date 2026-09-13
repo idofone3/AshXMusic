@@ -49,7 +49,8 @@ ITAG_AUDIO = {
 CLIENT_SPECS: Dict[str, Dict] = {
     "android_vr": {
         "host": "https://youtubei.googleapis.com/youtubei/v1",
-        "key": "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+        "key": None,  # key-less player calls are accepted; the old key
+                      # triggered HTTP 400 "Precondition check failed"
         "ctx": {"client": {"clientName": "ANDROID_VR", "clientVersion": "1.60.19",
                            "deviceMake": "Oculus", "deviceModel": "Quest 3",
                            "osName": "Android", "osVersion": "12L",
@@ -57,7 +58,10 @@ CLIENT_SPECS: Dict[str, Dict] = {
         "ua": ("com.google.android.apps.youtube.vr.oculus/1.60.19 "
                "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"),
         "headers": {"X-Youtube-Client-Name": "28", "X-Youtube-Client-Version": "1.60.19"},
-        "use_cookies": True,
+        # XD3 fix: googleapis.com host + session Origin=music.youtube.com
+        # -> "Origin doesn't match Host". Use a bare request (no cookies,
+        #    no Origin) - android_vr mints plain urls without cookies.
+        "use_cookies": False,
     },
     "ios": {
         "host": "https://www.youtube.com/youtubei/v1",

@@ -269,16 +269,74 @@ class Engine:
         st["status"] = "resolving"
         st["tierErrors"] = {}
 
-        # ---- tier 1: in-browser SABR (full song in seconds, works
-        #      everywhere incl. bot-walled datacenter IPs). YouTube
-        #      sometimes answers control-parts only for a burst (~1min);
-        #      retry with spacing + a rebuilt browser rides it out. ----
-        for tryn in range(3):
+        # ---- tier 1: SABR pump-to-disk. Lock-FRIENDLY: the shared
+        #      browser lock is only held per ~4MB window (~0.3s), so
+        #      interactive plays stream through meanwhile. The pot
+        #      capture (single-flight, cached 15 min) is the one
+        #      serialized part; the full song lands in ~1-2s after. ----
+        for tryn in range(2):
             tmp = None
             try:
                 if tryn:
                     st["status"] = "resolving"
-                    time.sleep(22 * tryn)   # 22s, 44s backoff
+                    time.sleep(6)
+                    try:
+                        fastdl.pot_invalidate(video_id)
+                    except Exception:
+                        pass
+                st["status"] = "sabr"
+                m = fastdl.pot_url(video_id, self._cookie_raw)
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(m["url"]).query)
+                clen = int((q.get("clen") or ["0"])[0])
+                mime = m.get("mime") or "audio/mp4"
+                container = ("weba" if ("webm" in mime or "opus" in mime)
+                             else "m4a")
+                track = (m.get("track") or {})
+                if not track.get("title"):
+                    track = self._track_from_browser(video_id) or {
+                        "videoId": video_id, "title": video_id,
+                        "author": "Unknown"}
+                st["track"] = track
+                st["streamMeta"] = {"itag": "sabr", "container": container,
+                                    "mimeType": mime, "quality": "sabr-full"}
+                st["mode"] = "sabr-pump"
+                st["status"] = "downloading"
+                st["bytesTotal"] = clen
+                tmp = self._tmp_path("pump", container)
+                written = 0
+                with open(tmp, "wb") as f:
+                    for chunk in fastdl.sabr_stream(video_id,
+                                                    self._cookie_raw):
+                        f.write(chunk)
+                        written += len(chunk)
+                        st["bytesDone"] = written
+                if written < 4096:
+                    raise YTApiError("sabr pump produced no data")
+                if clen and written < clen - 4096:
+                    raise YTApiError(
+                        f"sabr pump incomplete: {written}/{clen}")
+                self._finalize_mp4(st, track, tmp, video_id)
+                return
+            except Exception as e:
+                st["tierErrors"][f"pump{tryn + 1}" if tryn else "pump"] = \
+                    str(e)[:300]
+            finally:
+                if tmp and os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+
+        # ---- tier 2: in-browser SABR single-shot (thorough windowed
+        #      tail-fill; holds the browser lock longer, so it is only
+        #      the fallback). Retry with spacing + rebuilt browser. ----
+        for tryn in range(2):
+            tmp = None
+            try:
+                if tryn:
+                    st["status"] = "resolving"
+                    time.sleep(22 * tryn)   # 22s backoff
                     try:
                         fastdl._SHARED.invalidate()  # fresh PO token
                     except Exception:
@@ -317,7 +375,7 @@ class Engine:
                     except OSError:
                         pass
 
-        # ---- tier 2: direct url (innertube / browser clients) + parallel ----
+        # ---- tier 3: direct url (innertube / browser clients) + parallel ----
         tmp = None
         try:
             st["status"] = "resolving"

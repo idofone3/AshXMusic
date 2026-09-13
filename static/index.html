@@ -44,6 +44,8 @@ h1 span{color:var(--acc2)}
 .btn:active{transform:scale(.92)}
 .btn.p{background:var(--acc);border-color:var(--acc);color:#fff}
 .btn.dlbtn:hover{border-color:var(--ok);color:var(--ok)}
+.btn.mp3btn{width:auto;padding:0 9px;border-radius:9px;font-size:10.5px;font-weight:700;letter-spacing:.4px;color:var(--dim)}
+.btn.mp3btn:hover{border-color:var(--acc);color:var(--acc2)}
 .btn[disabled]{opacity:.45}
 .pctl{position:relative;overflow:hidden}
 .pbar{position:absolute;left:0;bottom:0;height:3px;background:var(--acc);width:0%;transition:width .4s;font-style:normal}
@@ -84,7 +86,7 @@ h1 span{color:var(--acc2)}
     <button class="chip" data-f="albums" type="button">Albums</button>
     <button class="chip" data-f="all" type="button">All</button>
   </div>
-  <div id="list"><div class="hint">Search YouTube Music and <b>tap to play instantly</b> —<br>⤓ saves the full song (mp4, cover art embedded).<br>API: <b>/dl/&lt;videoId&gt;</b> for wget · <b>?fmt=mp3</b> for 320k mp3.</div></div>
+  <div id="list"><div class="hint">Search YouTube Music and <b>tap to play instantly</b> —<br>⤓ mp4 with cover art · <b>MP3</b> 320k mp3.<br>Direct wget links: <b>/dl/&lt;videoId&gt;</b> · <b>?fmt=mp3</b></div></div>
 </div>
 
 <div class="player" id="pl">
@@ -139,14 +141,17 @@ async function search(q){
         <div class="meta"><div class="t">${esc(t.title)}</div>
         <div class="s">${esc(t.artist||"")}${t.duration?" · "+esc(t.duration):""}</div></div>
         <button class="btn p pctl" data-play="${t.videoId}" type="button">▶<i class="pbar" id="pb-${t.videoId}"></i></button>
-        <a class="btn dlbtn" data-dl href="/dl/${t.videoId}" download title="download mp4 (320k mp3: ?fmt=mp3)">⤓</a>
+        <a class="btn mp3btn" data-mp3 href="/dl/${t.videoId}?fmt=mp3" download title="download 320k mp3 (cover art embedded)">MP3</a>
+        <a class="btn dlbtn" data-dl href="/dl/${t.videoId}" download title="download mp4 with cover art (wget: /dl/${t.videoId})">⤓</a>
       </div>`).join("");
   }catch(e){$("list").innerHTML='<div class="hint">Search failed — is the server awake?</div>';}
 }
 
 $("list").addEventListener("click",e=>{
   const dla=e.target.closest("[data-dl]");
-  if(dla){e.stopPropagation();toast("Full-quality download started — see your browser downloads");return;}
+  if(dla){e.stopPropagation();toast("MP4 download started · wget: /dl/"+dla.closest(".row").dataset.v);return;}
+  const m3=e.target.closest("[data-mp3]");
+  if(m3){e.stopPropagation();toast("320k MP3 started · wget: /dl/"+m3.closest(".row").dataset.v+"?fmt=mp3");return;}
   const p=e.target.closest("[data-play]");
   if(p){play(p.dataset.play);return;}
   const row=e.target.closest(".row");
@@ -171,12 +176,11 @@ async function play(vid){
       title:info.title,artist:info.artist,album:"AshXMusic",
       artwork:info.thumb?[{src:info.thumb,sizes:"544x544"}]:[]});}catch(e){}
   }
-  // one tiny JSON call decides the fastest path — nothing blocks here
-  try{
-    const d=await(await fetch(`/play/${vid}`)).json();
-    if(d.mode==="downloading"){playViaDownload(vid,d.statusUrl);return;}
-    startAudio(d.url||`/stream/${vid}`);
-  }catch(e){startAudio(`/stream/${vid}`);}
+  // INSTANT: point <audio> straight at the stream endpoint (cached file
+  // or live SABR pump — the server picks). /play fires in the background
+  // only to pre-warm the pot url for the next play.
+  startAudio(`/stream/${vid}`);
+  fetch(`/play/${vid}`).catch(()=>{});
 }
 
 function startAudio(u){
@@ -207,6 +211,7 @@ function pollPlay(vid,dlId){
     }catch(e){}
   },1500);
 }
+au.addEventListener("waiting",()=>{if(cur)setPb("…");});
 au.addEventListener("playing",()=>{setPb("⏸");});
 au.addEventListener("pause",()=>{if(cur&&!au.ended)setPb("▶");});
 $("pb").addEventListener("click",()=>{if(!au.src)return;au.paused?au.play():au.pause();});

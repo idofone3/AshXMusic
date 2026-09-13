@@ -156,25 +156,50 @@ def _prewarm_download(video_id: str) -> Optional[str]:
     return _active_download(video_id) or engine.start_download(video_id, "best")
 
 
+_PREWARM_Q: list = []
+_PREWARM_BUSY = False
+_PREWARM_LOCK = threading.Lock()
+
+
 def _prewarm_top(results: list):
-    """Background-download the top search results -> by the time the user
-    taps play the song is cached and playback is INSTANT (206 seekable)."""
-    vids = [r.get("videoId") for r in results if r.get("videoId")][:5]
+    """Queue the top search results for background download so that by the
+    time the user taps play the song is cached and playback is INSTANT
+    (206 seekable from disk). ONE song at a time (the SABR download tiers
+    are lock-friendly now, but serializing keeps the shared browser
+    responsive for interactive plays) + a small delay so an immediate tap
+    always beats the prewarm to the mint."""
+    vids = [r.get("videoId") for r in results if r.get("videoId")][:3]
 
     def _run():
+        global _PREWARM_BUSY
+        time.sleep(2.0)                     # let an instant tap go first
         for vid in vids:
-            if _active_download(vid) or engine.cached_file(vid):
-                continue
-            busy = sum(1 for d in engine.downloads.values()
-                       if d.get("status") in _ACTIVE_STATES)
-            if busy >= 3:
-                return
+            with _PREWARM_LOCK:
+                if _PREWARM_BUSY:           # another worker still running
+                    _PREWARM_Q.append(vid)
+                    continue
+                _PREWARM_BUSY = True
             try:
-                engine.start_download(vid, "best")
+                if engine.cached_file(vid) or _active_download(vid):
+                    continue
+                dl_id = engine.start_download(vid, "best")
                 print(f"[prewarm] downloading {vid}", flush=True)
+                deadline = time.time() + 120
+                while time.time() < deadline:
+                    s = (engine.downloads.get(dl_id) or {}).get("status")
+                    if s in ("done", "error"):
+                        break
+                    time.sleep(1.0)
             except Exception as e:
                 print(f"[prewarm] {vid}: {str(e)[:80]}", flush=True)
-            time.sleep(2)
+            finally:
+                with _PREWARM_LOCK:
+                    _PREWARM_BUSY = False
+        # anything queued while busy -> drain in one more pass
+        if _PREWARM_Q:
+            _prewarm_top([{"videoId": v} for v in list(_PREWARM_Q)])
+            _PREWARM_Q.clear()
+
     threading.Thread(target=_run, daemon=True).start()
 
 
@@ -283,7 +308,9 @@ def _pump_response(video_id: str, range_header: Optional[str]):
 
     tee = None
     tee_path = None
-    if start == 0 and status == 200 and not engine.cached_file(video_id):
+    # full-length request (200 or a 'bytes=0-' 206) -> tee to disk so a
+    # completed play caches the song (instant seekable replays)
+    if start == 0 and end >= clen - 1 and not engine.cached_file(video_id):
         tee_path = os.path.join(DOWNLOADS_DIR, f".tee_{video_id}.part")
         try:
             tee = open(tee_path, "wb")
@@ -312,6 +339,13 @@ def _pump_response(video_id: str, range_header: Optional[str]):
                     threading.Thread(target=_tee_finalize,
                                      args=(video_id, tee_path, dict(track)),
                                      daemon=True).start()
+                else:
+                    # play aborted midway -> drop the partial tee so it
+                    # cannot linger (next full play starts a fresh one)
+                    try:
+                        os.remove(tee_path)
+                    except OSError:
+                        pass
 
     headers = {
         "Content-Length": str(length),
