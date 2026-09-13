@@ -14,7 +14,7 @@
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%}
-body{background:var(--bg);color:var(--tx);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;padding-bottom:calc(96px + env(safe-area-inset-bottom))}
+body{background:var(--bg);color:var(--tx);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;padding-bottom:calc(112px + env(safe-area-inset-bottom))}
 header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:10px;padding:14px 18px;background:rgba(10,12,16,.82);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
 .logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--acc),#4f34d8);display:grid;place-items:center;flex:none}
 .logo svg{width:18px;height:18px;fill:#fff}
@@ -53,14 +53,25 @@ h1 span{color:var(--acc2)}
 .hint b{color:var(--tx)}
 .spin{width:26px;height:26px;border:3px solid var(--line);border-top-color:var(--acc);border-radius:50%;margin:40px auto;animation:sp .8s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
-.toast{position:fixed;left:50%;bottom:calc(110px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);background:#1c2030;border:1px solid var(--line);color:var(--tx);padding:10px 16px;border-radius:10px;font-size:13.5px;opacity:0;pointer-events:none;transition:.25s;z-index:30;max-width:88vw;text-align:center}
+.toast{position:fixed;left:50%;bottom:calc(126px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);background:#1c2030;border:1px solid var(--line);color:var(--tx);padding:10px 16px;border-radius:10px;font-size:13.5px;opacity:0;pointer-events:none;transition:.25s;z-index:30;max-width:88vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%)}
 .player{position:fixed;left:0;right:0;bottom:0;z-index:20;background:rgba(14,16,23,.94);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:10px 16px calc(10px + env(safe-area-inset-bottom));transform:translateY(110%);transition:transform .28s}
 .player.up{transform:none}
 .prow{display:flex;align-items:center;gap:12px;max-width:680px;margin:0 auto}
+/* mini live-video window (YouTube player) with cover-art overlay */
+.ytv{position:relative;width:104px;height:59px;border-radius:10px;overflow:hidden;background:var(--card2);flex:none;border:1px solid var(--line)}
+.ytv iframe{position:absolute;top:0;left:0;width:208px;height:118px;border:0;transform:scale(.5);transform-origin:0 0;pointer-events:none}
+.ytv .cvo{position:absolute;inset:0;background-size:cover;background-position:center;transition:opacity .35s;filter:saturate(.9)}
+.ytv.live .cvo{opacity:0}
+.ytv .eq{position:absolute;left:6px;bottom:5px;width:16px;height:10px;display:none;gap:2px;align-items:flex-end;z-index:2}
+.ytv.live .eq{display:flex}
+.ytv .eq i{width:3px;background:var(--acc2);border-radius:1px;animation:eq 0.9s ease-in-out infinite}
+.ytv .eq i:nth-child(2){animation-delay:.2s}.ytv .eq i:nth-child(3){animation-delay:.4s}
+@keyframes eq{0%,100%{height:3px}50%{height:10px}}
 .pinfo{flex:1;min-width:0}
 .pt{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pa{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pa b{color:var(--acc2);font-weight:600}
 #seek{width:100%;height:4px;margin-top:8px;-webkit-appearance:none;appearance:none;background:var(--line);border-radius:2px;outline:none;cursor:pointer}
 #seek::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--acc)}
 #seek::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;background:var(--acc)}
@@ -91,13 +102,18 @@ h1 span{color:var(--acc2)}
 
 <div class="player" id="pl">
   <div class="prow">
-    <button id="pb" aria-label="play/pause" type="button">▶</button>
+    <div class="ytv" id="ytv">
+      <div id="ytf"></div>
+      <div class="cvo" id="cvo"></div>
+      <div class="eq"><i></i><i></i><i></i></div>
+    </div>
     <div class="pinfo">
       <div class="pt" id="pt">—</div>
       <div class="pa" id="pa"></div>
       <input id="seek" type="range" min="0" max="1000" value="0">
       <div class="time"><span id="t1">0:00</span><span id="t2">0:00</span></div>
     </div>
+    <button id="pb" aria-label="play/pause" type="button">▶</button>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -105,7 +121,7 @@ h1 span{color:var(--acc2)}
 
 <script>
 const $=id=>document.getElementById(id), au=$("au");
-let filter="songs", cur=null, seeking=false, ladder=0, dlTimer=null;
+let filter="songs", cur=null, seeking=false, dlTimer=null;
 
 function toast(m){const t=$("toast");t.textContent=m;t.classList.add("show");clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("show"),2800);}
 function fmt(s){s=Math.max(0,Math.floor(s||0));return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
@@ -144,6 +160,11 @@ async function search(q){
         <a class="btn mp3btn" data-mp3 href="/dl/${t.videoId}?fmt=mp3" download title="download 320k mp3 (cover art embedded)">MP3</a>
         <a class="btn dlbtn" data-dl href="/dl/${t.videoId}" download title="download mp4 with cover art (wget: /dl/${t.videoId})">⤓</a>
       </div>`).join("");
+    // pre-buffer the top result inside the hidden YT player: tapping it
+    // afterwards starts with ZERO fetch latency
+    if(ytReady&&!cur&&rs[0]&&!ytBlocked.has(rs[0].videoId)){
+      try{yt.cueVideoById(rs[0].videoId);}catch(e){}
+    }
   }catch(e){$("list").innerHTML='<div class="hint">Search failed — is the server awake?</div>';}
 }
 
@@ -162,66 +183,159 @@ function rowInfo(vid){
   const row=document.getElementById("r-"+vid);
   return {title:row?row.querySelector(".t").textContent:vid,
           artist:row?row.querySelector(".s").textContent:"",
-          thumb:row?(row.querySelector("img")||{}).src||"":""};
+          thumb:row?((row.querySelector("img")||{}).src||""):""};
 }
 
-async function play(vid){
+/* ================= DUAL-ENGINE INSTANT PLAYBACK =================
+   Tap fires BOTH engines at once; the first one that actually makes
+   sound wins and the other is silenced:
+     A. YouTube's official iframe player  -> runs 100% client-side on
+        the user's own IP (residential = never bot-walled), streams
+        straight from googlevideo CDN. Zero server involvement.
+     B. server /stream SABR pump          -> instant when the runner is
+        warm; hard 12s budget server-side so it can never hang.
+   If neither is audible within 5.5s -> download-then-play ladder.   */
+let yt=null, ytReady=false, ytPending=null, engine=null, raceT=null;
+const ytBlocked=new Set();
+
+(function(){const s=document.createElement('script');
+  s.src='https://www.youtube.com/iframe_api';s.async=true;
+  document.head.appendChild(s);})();
+
+window.onYouTubeIframeAPIReady=function(){
+  yt=new YT.Player('ytf',{width:'208',height:'118',videoId:'',
+    playerVars:{playsinline:1,controls:0,rel:0,fs:0,iv_load_policy:3,
+                disablekb:1,origin:location.origin},
+    events:{
+      onReady:function(){ytReady=true;
+        if(ytPending){const v=ytPending;ytPending=null;play(v);}},
+      onStateChange:function(e){
+        if(!cur)return;
+        if(e.data===1){ytWins();}
+        else if(e.data===0&&engine==='yt'){onEnded();}
+        else if(e.data===2&&engine==='yt'){setPb('▶');}
+      },
+      onError:function(){
+        // 2/5/100/101/150 — this video cannot be embed-played
+        if(cur)ytBlocked.add(cur);
+        $('ytv').classList.remove('live');
+        if(engine==='yt'){engine=null;try{yt.stopVideo();}catch(e){}
+          toast('Embed blocked by owner — using server engine…');}
+      }
+    }});
+};
+
+function ytWins(){
+  if(engine==='yt')return;
+  const first=!engine;
+  killAudio();clearTimeout(raceT);
+  engine='yt';
+  $('ytv').classList.add('live');setPb('⏸');
+  if(first)toast('⚡ instant — client-side');
+}
+function killAudio(){try{au.pause();au.removeAttribute('src');au.load();}catch(e){}}
+function stopYt(){try{yt.stopVideo();}catch(e){}$('ytv').classList.remove('live');}
+
+function play(vid){
   const info=rowInfo(vid);
-  cur=vid;ladder=0;
+  cur=vid;engine=null;clearTimeout(raceT);
   document.querySelectorAll(".row").forEach(r=>r.classList.toggle("act",r.dataset.v===vid));
   $("pt").textContent=info.title;$("pa").textContent=info.artist;
-  $("pl").classList.add("up");setPb("…");
+  $("cvo").style.backgroundImage=info.thumb?`url("${info.thumb}")`:"none";
+  $("pl").classList.add("up");$("ytv").classList.remove("live");setPb("…");
   if("mediaSession" in navigator){
     try{navigator.mediaSession.metadata=new MediaMetadata({
       title:info.title,artist:info.artist,album:"AshXMusic",
       artwork:info.thumb?[{src:info.thumb,sizes:"544x544"}]:[]});}catch(e){}
   }
-  // INSTANT: point <audio> straight at the stream endpoint (cached file
-  // or live SABR pump — the server picks). /play fires in the background
-  // only to pre-warm the pot url for the next play.
-  startAudio(`/stream/${vid}`);
-  fetch(`/play/${vid}`).catch(()=>{});
+  // ENGINE A — official YouTube player (client-side, user's IP)
+  if(ytReady&&!ytBlocked.has(vid)){try{yt.loadVideoById(vid);}catch(e){}}
+  else if(!ytReady){ytPending=vid;}
+  // ENGINE B — server SABR stream (races engine A)
+  killAudio();au.src=`/stream/${vid}`;au.play().catch(()=>{});
+  fetch(`/play/${vid}`).catch(()=>{});   // pre-warm pot for next play
+  // guard: nothing audible in 5.5s -> download-then-play
+  raceT=setTimeout(()=>{if(cur===vid&&!engine)playViaDownload(vid,null);},5500);
 }
 
-function startAudio(u){
-  ladder=0;au.src=u;au.play().catch(()=>{});
-}
-au.addEventListener("error",()=>{
-  if(!cur||!au.src)return;
-  ladder++;
-  if(ladder===1){toast("Direct stream busy — preparing the file…");playViaDownload(cur,null);return;}
-  setPb("▶");toast("Playback unavailable — use the ⤓ download");
+function onEnded(){engine=null;setPb('▶');}
+
+au.addEventListener("playing",()=>{
+  if(!cur)return;
+  if(engine==='yt'){killAudio();return;}      // yt won; stop wasted fetch
+  if(engine!=='audio'){
+    engine='audio';clearTimeout(raceT);stopYt();
+  }
+  setPb('⏸');
 });
+au.addEventListener("error",()=>{
+  if(!cur||!au.src||engine==='yt')return;
+  // yt engine may still win the race — only fall straight back when the
+  // embed path is unavailable for this track
+  if(!ytReady||ytBlocked.has(cur)){
+    setTimeout(()=>{if(cur&&!engine)playViaDownload(cur,null);},400);
+  }
+});
+au.addEventListener("ended",()=>{if(cur){engine=null;setPb('▶');}});
+au.addEventListener("waiting",()=>{if(cur&&engine!=='yt')setPb("…");});
+au.addEventListener("pause",()=>{if(cur&&engine==='audio'&&!au.ended)setPb('▶');});
+
 function playViaDownload(vid,statusUrl){
   setPb("…");
   if(statusUrl){pollPlay(vid,statusUrl.split("/").pop());return;}
-  fetch(`/downloads/${vid}`,{method:"POST"}).then(r=>r.json()).then(j=>{
-    pollPlay(vid,j.downloadId);
+  // reuse an already-running download instead of starting a duplicate
+  fetch(`/play/${vid}`).then(r=>r.json()).then(j=>{
+    if(j.mode==="downloading"&&j.downloadId){pollPlay(vid,j.downloadId);return;}
+    return fetch(`/downloads/${vid}`,{method:"POST"})
+      .then(r=>r.json()).then(j2=>pollPlay(vid,j2.downloadId));
   }).catch(()=>{setPb("▶");toast("Could not start the fallback download");});
 }
 function pollPlay(vid,dlId){
   if(dlTimer)clearInterval(dlTimer);
   dlTimer=setInterval(async()=>{
+    if(cur!==vid){clearInterval(dlTimer);dlTimer=null;return;}
     try{
       const st=await(await fetch(`/downloads/${dlId}`)).json();
       const pct=st.bytesTotal?Math.round(st.bytesDone/st.bytesTotal*100):0;
       if(st.status==="downloading"||st.status==="sabr")setPb(pct?pct+"%":"…");
-      else if(st.status==="done"){clearInterval(dlTimer);dlTimer=null;startAudio(`/stream/${vid}`);}
+      else if(st.status==="done"){
+        clearInterval(dlTimer);dlTimer=null;
+        if(!engine){killAudio();au.src=`/stream/${vid}`;au.play().catch(()=>{});}
+      }
       else if(st.status==="error"){clearInterval(dlTimer);dlTimer=null;setPb("▶");toast("Couldn't prepare this track — try ⤓");}
     }catch(e){}
   },1500);
 }
-au.addEventListener("waiting",()=>{if(cur)setPb("…");});
-au.addEventListener("playing",()=>{setPb("⏸");});
-au.addEventListener("pause",()=>{if(cur&&!au.ended)setPb("▶");});
-$("pb").addEventListener("click",()=>{if(!au.src)return;au.paused?au.play():au.pause();});
+
+$("pb").addEventListener("click",()=>{
+  if(!cur)return;
+  if(engine==='yt'){
+    try{yt.getPlayerState()===1?yt.pauseVideo():yt.playVideo();}catch(e){}
+  }else if(au.src){au.paused?au.play():au.pause();}
+});
+
+$("seek").addEventListener("input",()=>{seeking=true;});
+$("seek").addEventListener("change",()=>{
+  const f=$("seek").value/1000;
+  if(engine==='yt'){try{const d=yt.getDuration();if(d)yt.seekTo(f*d,true);}catch(e){}}
+  else if(au.duration)au.currentTime=f*au.duration;
+  seeking=false;
+});
 au.addEventListener("timeupdate",()=>{
+  if(engine==='yt')return;
   if(!seeking&&au.duration){$("seek").value=Math.round(au.currentTime/au.duration*1000);}
   $("t1").textContent=fmt(au.currentTime);
   if(au.duration)$("t2").textContent=fmt(au.duration);
 });
-$("seek").addEventListener("input",()=>{seeking=true;});
-$("seek").addEventListener("change",()=>{if(au.duration)au.currentTime=$("seek").value/1000*au.duration;seeking=false;});
+setInterval(()=>{                       // YT engine progress ticker
+  if(!cur||engine!=='yt')return;
+  try{
+    const d=yt.getDuration(),t=yt.getCurrentTime();
+    if(d>0&&!seeking)$("seek").value=Math.round(t/d*1000);
+    $("t1").textContent=fmt(t);
+    if(d>0)$("t2").textContent=fmt(d);
+  }catch(e){}
+},300);
 </script>
 </body>
 </html>

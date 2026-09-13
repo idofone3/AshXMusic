@@ -359,6 +359,24 @@ def _pump_response(video_id: str, range_header: Optional[str]):
                              headers=headers)
 
 
+def _pump_budgeted(video_id: str, range_header: Optional[str],
+                   budget: float = 12.0):
+    """_pump_response with a HARD wall-clock budget for the response
+    *construction* (pot mint). Without this a stuck shared browser used to
+    hang /stream forever -> the client saw no response at all, no error,
+    just an eternal spinner. On timeout the mint thread keeps running in
+    the background and its result lands in the pot cache for the next try."""
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = ex.submit(_pump_response, video_id, range_header)
+        try:
+            return fut.result(timeout=budget)
+        except concurrent.futures.TimeoutError:
+            raise RuntimeError(f"pump budget {budget:.0f}s exceeded")
+    finally:
+        ex.shutdown(wait=False)
+
+
 def _plain_proxy_response(video_id: str, range_header: Optional[str],
                           quality: str = "best"):
     """Last-resort fallback: proxy a minted plain googlevideo url (works
@@ -557,7 +575,11 @@ def play_meta(video_id: str):
                   statusUrl and play when done (usually a few seconds)
       stream      nothing ready -> GET /stream/{id} (instant SABR stream,
                   pot url is pre-minted in the background right now)
-    Every response is immediate; nothing here ever blocks on media bytes."""
+      embed       the official YouTube iframe player can serve this song
+                  client-side (user's own IP, zero server load)
+    Every response is immediate; nothing here ever blocks on media bytes.
+    NOTE: the UI races stream+embed simultaneously - whoever produces
+    sound first wins."""
     cached = engine.cached_file(video_id)
     if cached:
         return {"mode": "file", "url": f"/stream/{video_id}",
@@ -624,10 +646,10 @@ def stream(video_id: str, request: Request, quality: str = "best",
             except Exception as e:
                 raise HTTPException(502, f"no stream url: {str(e)[:140]}")
         return RedirectResponse(m["url"])
-    # 1. instant SABR pump (primary)
+    # 1. instant SABR pump (primary) - hard 12s budget, fails FAST
     pump_err = None
     try:
-        return _pump_response(video_id, range_header)
+        return _pump_budgeted(video_id, range_header)
     except HTTPException:
         raise
     except Exception as e:
