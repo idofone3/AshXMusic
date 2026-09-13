@@ -383,7 +383,7 @@ def _plain_proxy_response(video_id: str, range_header: Optional[str],
     when the network is not bot-walled). Range requests pass through."""
     m = _mint_get(video_id)
     if not m:
-        m = _mint_one(video_id, quality, budget=20.0)
+        m = _mint_one(video_id, quality, budget=8.0)
         _mint_put(video_id, m)
     fwd = {"User-Agent": _UA_GV, "Referer": "https://music.youtube.com/",
            "Origin": "https://music.youtube.com"}
